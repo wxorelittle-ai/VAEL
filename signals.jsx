@@ -71,6 +71,131 @@ function taAtr(candles, period = 14) {
   return sum / period;
 }
 
+/* Simple moving average → full series (needed for StochRSI smoothing) */
+function taSmaSeries(values, period) {
+  const out = new Array(values.length).fill(0);
+  let sum = 0;
+  for (let i = 0; i < values.length; i++) {
+    sum += values[i];
+    if (i >= period) sum -= values[i - period];
+    out[i] = i >= period - 1 ? sum / period : values[i];
+  }
+  return out;
+}
+
+/* Wilder RSI → full series (needed for StochRSI) */
+function taRsiSeries(values, period = 14) {
+  const n = values.length;
+  const out = new Array(n).fill(50);
+  if (n < period + 1) return out;
+  let avgG = 0, avgL = 0;
+  for (let i = 1; i <= period; i++) {
+    const d = values[i] - values[i - 1];
+    if (d >= 0) avgG += d; else avgL -= d;
+  }
+  avgG /= period; avgL /= period;
+  out[period] = avgL === 0 ? 100 : 100 - 100 / (1 + avgG / avgL);
+  for (let i = period + 1; i < n; i++) {
+    const d = values[i] - values[i - 1];
+    const g = d > 0 ? d : 0, l = d < 0 ? -d : 0;
+    avgG = (avgG * (period - 1) + g) / period;
+    avgL = (avgL * (period - 1) + l) / period;
+    out[i] = avgL === 0 ? 100 : 100 - 100 / (1 + avgG / avgL);
+  }
+  return out;
+}
+
+/* Stochastic RSI → { k, d, kPrev, dPrev } (0..100). Cross of K over D = momentum trigger.
+ * Ported (logic, not source) from Alorse/pinescript-strategies StochRSI setups. */
+function taStochRsi(values, lenRSI = 14, lenStoch = 14, smoothK = 3, smoothD = 3) {
+  const rsi = taRsiSeries(values, lenRSI);
+  const n = rsi.length;
+  if (n < lenRSI + lenStoch + smoothK + smoothD) return { k: 50, d: 50, kPrev: 50, dPrev: 50 };
+  const raw = new Array(n).fill(50);
+  for (let i = lenStoch - 1; i < n; i++) {
+    let hi = -Infinity, lo = Infinity;
+    for (let j = i - lenStoch + 1; j <= i; j++) { if (rsi[j] > hi) hi = rsi[j]; if (rsi[j] < lo) lo = rsi[j]; }
+    raw[i] = hi === lo ? 0 : (rsi[i] - lo) / (hi - lo) * 100;
+  }
+  const k = taSmaSeries(raw, smoothK);
+  const d = taSmaSeries(k, smoothD);
+  const m = k.length;
+  return { k: k[m - 1], d: d[m - 1], kPrev: k[m - 2], dPrev: d[m - 2] };
+}
+
+/* Supertrend(factor, atrPeriod) → { value, dir(+1 up / -1 down), dirPrev, flipUp, flipDown }.
+ * Standard Wilder-ATR band with carry-over rules — the backbone of most strategies
+ * in the ported PineScript library. */
+function taSupertrend(candles, factor = 3, atrPeriod = 10) {
+  const n = candles ? candles.length : 0;
+  if (n < atrPeriod + 2) return { value: 0, dir: 0, dirPrev: 0, flipUp: false, flipDown: false };
+  const tr = new Array(n).fill(0);
+  for (let i = 1; i < n; i++) {
+    const c = candles[i], p = candles[i - 1];
+    tr[i] = Math.max(c.hi - c.lo, Math.abs(c.hi - p.close), Math.abs(c.lo - p.close));
+  }
+  const atr = new Array(n).fill(0);
+  let seed = 0;
+  for (let i = 1; i <= atrPeriod; i++) seed += tr[i];
+  atr[atrPeriod] = seed / atrPeriod;
+  for (let i = atrPeriod + 1; i < n; i++) atr[i] = (atr[i - 1] * (atrPeriod - 1) + tr[i]) / atrPeriod;
+
+  const fUpper = new Array(n).fill(0), fLower = new Array(n).fill(0), st = new Array(n).fill(0);
+  const dir = new Array(n).fill(1);
+  for (let i = atrPeriod; i < n; i++) {
+    const c = candles[i], hl2 = (c.hi + c.lo) / 2;
+    const bU = hl2 + factor * atr[i], bL = hl2 - factor * atr[i];
+    if (i === atrPeriod) { fUpper[i] = bU; fLower[i] = bL; st[i] = bU; dir[i] = -1; continue; }
+    const pClose = candles[i - 1].close;
+    fUpper[i] = (bU < fUpper[i - 1] || pClose > fUpper[i - 1]) ? bU : fUpper[i - 1];
+    fLower[i] = (bL > fLower[i - 1] || pClose < fLower[i - 1]) ? bL : fLower[i - 1];
+    st[i] = st[i - 1] === fUpper[i - 1]
+      ? (c.close > fUpper[i] ? fLower[i] : fUpper[i])
+      : (c.close < fLower[i] ? fUpper[i] : fLower[i]);
+    dir[i] = st[i] === fUpper[i] ? -1 : 1;   // line above price ⇒ downtrend
+  }
+  const d = dir[n - 1], dp = dir[n - 2];
+  return { value: st[n - 1], dir: d, dirPrev: dp, flipUp: dp < 0 && d > 0, flipDown: dp > 0 && d < 0 };
+}
+
+/* Directional Movement Index → { plusDI, minusDI, adx }. ADX>20-25 = trending market;
+ * use as a "don't trade the chop" gate. Wilder smoothing throughout. */
+function taDmi(candles, period = 14) {
+  const n = candles ? candles.length : 0;
+  if (n < 2 * period + 1) return { plusDI: 0, minusDI: 0, adx: 0 };
+  let smTR = 0, smPlus = 0, smMinus = 0;
+  const dm = (c, p) => {
+    const up = c.hi - p.hi, dn = p.lo - c.lo;
+    return {
+      plus: (up > dn && up > 0) ? up : 0,
+      minus: (dn > up && dn > 0) ? dn : 0,
+      tr: Math.max(c.hi - c.lo, Math.abs(c.hi - p.close), Math.abs(c.lo - p.close)),
+    };
+  };
+  for (let i = 1; i <= period; i++) {
+    const m = dm(candles[i], candles[i - 1]);
+    smTR += m.tr; smPlus += m.plus; smMinus += m.minus;
+  }
+  const dxSeries = [];
+  for (let i = period + 1; i < n; i++) {
+    const m = dm(candles[i], candles[i - 1]);
+    smTR = smTR - smTR / period + m.tr;
+    smPlus = smPlus - smPlus / period + m.plus;
+    smMinus = smMinus - smMinus / period + m.minus;
+    const pDI = smTR ? 100 * smPlus / smTR : 0, mDI = smTR ? 100 * smMinus / smTR : 0;
+    dxSeries.push((pDI + mDI) ? 100 * Math.abs(pDI - mDI) / (pDI + mDI) : 0);
+  }
+  const plusDI = smTR ? 100 * smPlus / smTR : 0, minusDI = smTR ? 100 * smMinus / smTR : 0;
+  let adx = 0;
+  if (dxSeries.length >= period) {
+    adx = dxSeries.slice(0, period).reduce((s, x) => s + x, 0) / period;
+    for (let i = period; i < dxSeries.length; i++) adx = (adx * (period - 1) + dxSeries[i]) / period;
+  } else if (dxSeries.length) {
+    adx = dxSeries.reduce((s, x) => s + x, 0) / dxSeries.length;
+  }
+  return { plusDI, minusDI, adx };
+}
+
 /* Attribute a signal to the agent whose domain drove it (cosmetic, but honest) */
 function agentForSignal(a) {
   const macdTurn = a.macd && ((a.side === "buy" && a.macd.hist > 0 && a.macd.histPrev <= 0) ||
@@ -96,6 +221,7 @@ function analyzeMarket(candles) {
   const emaFprev = taEma(closes.slice(0, -1), 9);
   const emaSprev = taEma(closes.slice(0, -1), 21);
   const macd = taMacd(closes);
+  const st = taSupertrend(candles, 3, 10);
   const atr = taAtr(candles, 14);
   const atrPct = price ? (atr / price) * 100 : 0;
   const mom = ((price - closes[n - 6]) / closes[n - 6]) * 100;
@@ -135,9 +261,15 @@ function analyzeMarket(candles) {
     reasons.push(`объём ${volRatio.toFixed(1)}× среднего · подтверждение`);
   }
 
+  // 6) Supertrend — independent trend filter + fresh-flip trigger
+  if (st.dir > 0) { score += 1.0; reasons.push("Supertrend вверх"); }
+  else if (st.dir < 0) { score -= 1.0; reasons.push("Supertrend вниз"); }
+  if (st.flipUp) { score += 0.6; reasons.push("свежий разворот Supertrend ↗"); }
+  else if (st.flipDown) { score -= 0.6; reasons.push("свежий разворот Supertrend ↘"); }
+
   const side = score >= 0 ? "buy" : "sell";
   const aligned = (side === "buy" && trendDir >= 0) || (side === "sell" && trendDir <= 0);
-  const strength = Math.min(1, Math.abs(score) / 4.2);
+  const strength = Math.min(1, Math.abs(score) / 5.4);
   const confidence = Math.round(55 + strength * 40);   // 55–95, tied to conviction
 
   // A genuine setup needs conviction, trend alignment and real volatility
@@ -151,8 +283,9 @@ function analyzeMarket(candles) {
 
   const a = {
     side, score, confidence, setup, aligned,
-    reasons: reasons.slice(0, 4),
+    reasons: reasons.slice(0, 5),
     rsi, emaF, emaS, ema50, macd, atr, atrPct, mom, volRatio,
+    supertrend: st.value, stDir: st.dir,
     trendUp: trendDir > 0, trendDir, sl, tp, rr: 1.8,
   };
   a.agent = agentForSignal(a);
@@ -241,4 +374,5 @@ function computeMarketMetrics(candles, ctx = {}) {
 Object.assign(window, {
   analyzeMarket, taEma, taEmaSeries, taRsi, taMacd, taAtr, agentForSignal,
   taVolAnomaly, computeMarketMetrics,
+  taSmaSeries, taRsiSeries, taStochRsi, taSupertrend, taDmi,
 });
