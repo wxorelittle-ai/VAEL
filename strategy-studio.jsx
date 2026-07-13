@@ -9,12 +9,136 @@ const SOURCE_TYPES = [
 ];
 
 const INDICATOR_TYPES = [
-  { id: "ema",    ru: "EMA (скользящая)",     params: ["period"], defaults: { period: 50 } },
-  { id: "rsi",    ru: "RSI",                  params: ["period"], defaults: { period: 14 } },
-  { id: "macd",   ru: "MACD",                 params: ["fast", "slow"], defaults: { fast: 12, slow: 26 } },
-  { id: "vwap",   ru: "VWAP",                 params: [],         defaults: {} },
-  { id: "vol",    ru: "Volume Profile",       params: ["window"], defaults: { window: 24 } },
-  { id: "atr",    ru: "ATR (волатильность)",  params: ["period"], defaults: { period: 14 } },
+  { id: "ema",        ru: "EMA (скользящая)",     params: ["period"], defaults: { period: 50 } },
+  { id: "rsi",        ru: "RSI",                  params: ["period"], defaults: { period: 14 } },
+  { id: "macd",       ru: "MACD",                 params: ["fast", "slow"], defaults: { fast: 12, slow: 26 } },
+  { id: "supertrend", ru: "Supertrend",           params: ["factor", "atr"], defaults: { factor: 3, atr: 10 } },
+  { id: "stochrsi",   ru: "Stoch RSI",            params: ["rsi", "stoch"], defaults: { rsi: 14, stoch: 14 } },
+  { id: "dmi",        ru: "DMI / ADX",            params: ["period"], defaults: { period: 14 } },
+  { id: "vwap",       ru: "VWAP",                 params: [],         defaults: {} },
+  { id: "vol",        ru: "Volume Profile",       params: ["window"], defaults: { window: 24 } },
+  { id: "atr",        ru: "ATR (волатильность)",  params: ["period"], defaults: { period: 14 } },
+];
+
+/* Ready-made strategy templates — entry/exit logic ported (not source; MPL-2.0
+ * originals) from the Alorse/pinescript-strategies TradingView library. One click
+ * loads a full strategy into the wizard and live-backtests it on Bybit candles.
+ * The engine (analyzeMarket) already fuses Supertrend + RSI + MACD confluence, so
+ * these presets shape side / confidence / exits around proven rule sets. */
+const STRATEGY_PRESETS = [
+  {
+    key: "st_rsi",
+    title: "Supertrend + RSI",
+    tag: "тренд",
+    desc: "Вход по тренду Supertrend, когда RSI пробивает 50. Выход по перекупу или смене Supertrend.",
+    build: () => ({
+      ...makeNewStrategy(),
+      name: "Supertrend + RSI · 1h",
+      sources: ["price"],
+      indicators: [
+        { uid: "st01", id: "supertrend", params: { factor: 3, atr: 10 } },
+        { uid: "rs01", id: "rsi", params: { period: 14 } },
+      ],
+      side: "buy", minConfidence: 75,
+      entry: [
+        { uid: "e1", left: "supertrend", op: "gt", right: "value", rightValue: 0, connector: null },
+        { uid: "e2", left: "rsi", op: "cross_above", right: "value", rightValue: 50, connector: "AND" },
+      ],
+      exit: { type: "tp_sl", tp: 4, sl: 2, trailing: 1.5, candles: 24 },
+      sizing: "pct",
+    }),
+  },
+  {
+    key: "stochrsi_st",
+    title: "StochRSI + Supertrend + EMA200",
+    tag: "импульс",
+    desc: "Цена выше EMA200, Supertrend вверх, StochRSI K пересекает D из зоны <20. Ранний вход по тренду.",
+    build: () => ({
+      ...makeNewStrategy(),
+      name: "StochRSI + ST + EMA200",
+      sources: ["price"],
+      indicators: [
+        { uid: "em01", id: "ema", params: { period: 200 } },
+        { uid: "st02", id: "supertrend", params: { factor: 2, atr: 11 } },
+        { uid: "sr01", id: "stochrsi", params: { rsi: 14, stoch: 14 } },
+      ],
+      side: "buy", minConfidence: 78,
+      entry: [
+        { uid: "e1", left: "price", op: "gt", right: "em01", connector: null },
+        { uid: "e2", left: "st02", op: "gt", right: "value", rightValue: 0, connector: "AND" },
+        { uid: "e3", left: "sr01", op: "cross_above", right: "value", rightValue: 20, connector: "AND" },
+      ],
+      exit: { type: "signal", tp: 5, sl: 2.5, trailing: 1.5, candles: 24 },
+      sizing: "pct",
+    }),
+  },
+  {
+    key: "double_st",
+    title: "Double Supertrend",
+    tag: "тренд",
+    desc: "Два Supertrend с разными факторами. Вход при согласии обоих — фильтрует ложные развороты.",
+    build: () => ({
+      ...makeNewStrategy(),
+      name: "Double Supertrend · 1h",
+      sources: ["price"],
+      indicators: [
+        { uid: "st03", id: "supertrend", params: { factor: 3, atr: 10 } },
+        { uid: "st04", id: "supertrend", params: { factor: 1, atr: 10 } },
+      ],
+      side: "both", minConfidence: 80,
+      entry: [
+        { uid: "e1", left: "st03", op: "gt", right: "value", rightValue: 0, connector: null },
+        { uid: "e2", left: "st04", op: "gt", right: "value", rightValue: 0, connector: "AND" },
+      ],
+      exit: { type: "trailing", tp: 6, sl: 3, trailing: 2, candles: 24 },
+      sizing: "pct",
+    }),
+  },
+  {
+    key: "macd_bb_rsi",
+    title: "MACD + BB + RSI",
+    tag: "импульс",
+    desc: "Классический трио-фильтр: импульс MACD + возврат от полос Боллинджера + подтверждение RSI.",
+    build: () => ({
+      ...makeNewStrategy(),
+      name: "MACD + BB + RSI",
+      sources: ["price"],
+      indicators: [
+        { uid: "mc01", id: "macd", params: { fast: 12, slow: 26 } },
+        { uid: "rs02", id: "rsi", params: { period: 14 } },
+        { uid: "at01", id: "atr", params: { period: 14 } },
+      ],
+      side: "buy", minConfidence: 76,
+      entry: [
+        { uid: "e1", left: "mc01", op: "cross_above", right: "value", rightValue: 0, connector: null },
+        { uid: "e2", left: "rs02", op: "gt", right: "value", rightValue: 50, connector: "AND" },
+      ],
+      exit: { type: "tp_sl", tp: 4.5, sl: 2, trailing: 1.5, candles: 20 },
+      sizing: "pct",
+    }),
+  },
+  {
+    key: "dmi_trend",
+    title: "DMI Winner (ADX-фильтр)",
+    tag: "тренд",
+    desc: "Торговать только сильный тренд: ADX>20 и +DI над −DI. Отсекает боковик и пилу.",
+    build: () => ({
+      ...makeNewStrategy(),
+      name: "DMI Winner · ADX>20",
+      sources: ["price"],
+      indicators: [
+        { uid: "dm01", id: "dmi", params: { period: 14 } },
+        { uid: "em02", id: "ema", params: { period: 50 } },
+      ],
+      side: "buy", minConfidence: 77,
+      entry: [
+        { uid: "e1", left: "dm01", op: "gt", right: "value", rightValue: 20, connector: null },
+        { uid: "e2", left: "price", op: "gt", right: "em02", connector: "AND" },
+      ],
+      exit: { type: "tp_sl", tp: 5, sl: 2.5, trailing: 2, candles: 24 },
+      sizing: "pct",
+    }),
+  },
 ];
 
 const COND_OPS = [
@@ -144,7 +268,8 @@ function StrategyStudio({ open, onClose, asset, lang, onSave }) {
             overflowY: "auto", padding: 18,
             borderRight: "1px solid var(--line)",
           }}>
-            {step === 0 && <SourceStep strategy={strategy} setStrategy={setStrategy} />}
+            {step === 0 && <SourceStep strategy={strategy} setStrategy={setStrategy}
+              onPreset={(p) => { setStrategy(p.build()); setStep(4); }} />}
             {step === 1 && <IndicatorStep strategy={strategy} setStrategy={setStrategy} />}
             {step === 2 && <EntryStep strategy={strategy} setStrategy={setStrategy} />}
             {step === 3 && <ExitStep strategy={strategy} setStrategy={setStrategy} />}
@@ -210,7 +335,7 @@ function makeNewStrategy() {
 }
 
 /* ─────── Step 1: Source ─────── */
-function SourceStep({ strategy, setStrategy }) {
+function SourceStep({ strategy, setStrategy, onPreset }) {
   const toggle = (id) => {
     setStrategy(s => ({
       ...s,
@@ -219,6 +344,37 @@ function SourceStep({ strategy, setStrategy }) {
   };
   return (
     <StepShell title="Источники данных" subtitle="Выберите 1 или более потоков, которые будет анализировать стратегия">
+      {/* Ready-made templates */}
+      {onPreset && (
+        <div>
+          <div style={fieldLabel}>Готовые шаблоны · 1 клик → бэктест</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+            {STRATEGY_PRESETS.map(p => (
+              <button key={p.key} onClick={() => onPreset(p)} style={{
+                display: "grid", gridTemplateColumns: "auto 1fr", gap: 10, alignItems: "start",
+                padding: "8px 11px", textAlign: "left",
+                background: "var(--bg-2)", border: "1px solid var(--line)",
+                borderLeft: "3px solid var(--accent-2)", borderRadius: 3, cursor: "pointer",
+              }}>
+                <span style={{
+                  fontFamily: "var(--font-mono)", fontSize: 8.5, fontWeight: 700,
+                  color: "var(--accent-2)", background: "var(--bg-0)",
+                  border: "1px solid var(--line)", borderRadius: 2, padding: "2px 5px",
+                  letterSpacing: 0.06, textTransform: "uppercase", whiteSpace: "nowrap", marginTop: 1,
+                }}>{p.tag}</span>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 12, fontWeight: 500, color: "var(--text-bright)" }}>{p.title}</div>
+                  <div style={{ fontSize: 10.5, color: "var(--text-mid)", marginTop: 2, lineHeight: 1.4 }}>{p.desc}</div>
+                </div>
+              </button>
+            ))}
+          </div>
+          <div style={{
+            textAlign: "center", margin: "10px 0 2px",
+            fontFamily: "var(--font-mono)", fontSize: 9.5, color: "var(--text-dim)", letterSpacing: 0.1,
+          }}>— или собери с нуля —</div>
+        </div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
         {SOURCE_TYPES.map(s => {
           const on = strategy.sources.includes(s.id);
@@ -657,6 +813,18 @@ function StrategyPreview({ strategy, asset, step }) {
     return out;
   }, [candles, strategy.indicators]);
 
+  const st = useMemo(() => {
+    const has = strategy.indicators.find(i => i.id === "supertrend");
+    if (!has || candles.length < 20 || typeof taSupertrend !== "function") return null;
+    const factor = has.params?.factor || 3, atrP = has.params?.atr || 10;
+    const out = [];
+    for (let idx = candles.length - 50; idx < candles.length; idx++) {
+      const r = taSupertrend(candles.slice(0, idx + 1), factor, atrP);
+      out.push({ v: r.value, dir: r.dir });
+    }
+    return out;
+  }, [candles, strategy.indicators]);
+
   const s = bt ? bt.stats : null;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -665,7 +833,7 @@ function StrategyPreview({ strategy, asset, step }) {
         <div style={{ background: "var(--bg-1)", border: "1px solid var(--line)", borderRadius: 4, padding: 8 }}>
           {loading
             ? <div style={{ height: 200, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: 11 }}>загрузка свечей Bybit…</div>
-            : <PreviewChart candles={chartCandles} ema={ema} markers={chartMarkers} width={400} height={200} />}
+            : <PreviewChart candles={chartCandles} ema={ema} st={st} markers={chartMarkers} width={400} height={200} />}
           {rsi && !loading && (
             <div style={{ marginTop: 4 }}>
               <div style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--text-dim)", marginBottom: 2 }}>RSI {strategy.indicators.find(i => i.id === "rsi").params.period}</div>
@@ -710,15 +878,30 @@ function StrategyPreview({ strategy, asset, step }) {
   );
 }
 
-function PreviewChart({ candles, ema, markers, width = 400, height = 200 }) {
-  const min = Math.min(...candles.map(c => c.lo));
-  const max = Math.max(...candles.map(c => c.hi));
+function PreviewChart({ candles, ema, st, markers, width = 400, height = 200 }) {
+  const lows = candles.map(c => c.lo), highs = candles.map(c => c.hi);
+  const stVals = st ? st.map(p => p.v).filter(v => isFinite(v) && v > 0) : [];
+  const min = Math.min(...lows, ...stVals);
+  const max = Math.max(...highs, ...stVals);
   const range = (max - min) || 1;
   const stepX = width / candles.length;
   const candleW = Math.max(2, stepX * 0.6);
   const y = v => 8 + (1 - (v - min) / range) * (height - 16);
 
   const emaPath = ema ? ema.map((v, i) => `${i === 0 ? "M" : "L"}${i * stepX + stepX/2},${y(v)}`).join(" ") : null;
+
+  // Supertrend line — drawn as coloured segments (green in uptrend, red in downtrend)
+  const stSegs = [];
+  if (st) {
+    for (let i = 1; i < st.length; i++) {
+      if (!isFinite(st[i].v) || st[i].v <= 0 || !isFinite(st[i - 1].v) || st[i - 1].v <= 0) continue;
+      stSegs.push({
+        x1: (i - 1) * stepX + stepX / 2, y1: y(st[i - 1].v),
+        x2: i * stepX + stepX / 2, y2: y(st[i].v),
+        color: st[i].dir > 0 ? "var(--green)" : "var(--red)",
+      });
+    }
+  }
 
   return (
     <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" style={{ display: "block" }}>
@@ -738,6 +921,9 @@ function PreviewChart({ candles, ema, markers, width = 400, height = 200 }) {
       {emaPath && (
         <path d={emaPath} fill="none" stroke="var(--accent)" strokeWidth={1.2} strokeDasharray="0" opacity={0.85} />
       )}
+      {stSegs.map((s, i) => (
+        <line key={`st${i}`} x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2} stroke={s.color} strokeWidth={1.3} opacity={0.9} />
+      ))}
       {markers.map((m, i) => {
         const cx = m.idx * stepX + stepX / 2;
         const cy = y(m.price);
