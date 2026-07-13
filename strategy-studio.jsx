@@ -15,6 +15,7 @@ const INDICATOR_TYPES = [
   { id: "supertrend", ru: "Supertrend",           params: ["factor", "atr"], defaults: { factor: 3, atr: 10 } },
   { id: "stochrsi",   ru: "Stoch RSI",            params: ["rsi", "stoch"], defaults: { rsi: 14, stoch: 14 } },
   { id: "dmi",        ru: "DMI / ADX",            params: ["period"], defaults: { period: 14 } },
+  { id: "bb",         ru: "Bollinger Bands",      params: ["period", "mult"], defaults: { period: 20, mult: 2 } },
   { id: "vwap",       ru: "VWAP",                 params: [],         defaults: {} },
   { id: "vol",        ru: "Volume Profile",       params: ["window"], defaults: { window: 24 } },
   { id: "atr",        ru: "ATR (волатильность)",  params: ["period"], defaults: { period: 14 } },
@@ -136,6 +137,50 @@ const STRATEGY_PRESETS = [
         { uid: "e2", left: "price", op: "gt", right: "em02", connector: "AND" },
       ],
       exit: { type: "tp_sl", tp: 5, sl: 2.5, trailing: 2, candles: 24 },
+      sizing: "pct",
+    }),
+  },
+  {
+    key: "bb_rsi",
+    title: "Bollinger + RSI (возврат к среднему)",
+    tag: "возврат",
+    desc: "Mean-reversion: лонг, когда цена проваливается под нижнюю полосу Боллинджера при RSI<30. Выход у перекупа.",
+    build: () => ({
+      ...makeNewStrategy(),
+      name: "Bollinger + RSI · MR",
+      sources: ["price"],
+      indicators: [
+        { uid: "bb01", id: "bb", params: { period: 20, mult: 2 } },
+        { uid: "rs03", id: "rsi", params: { period: 14 } },
+      ],
+      side: "buy", minConfidence: 70,
+      entry: [
+        { uid: "e1", left: "price", op: "lt", right: "bb01", connector: null },
+        { uid: "e2", left: "rs03", op: "lt", right: "value", rightValue: 30, connector: "AND" },
+      ],
+      exit: { type: "tp_sl", tp: 5, sl: 4, trailing: 2, candles: 24 },
+      sizing: "pct",
+    }),
+  },
+  {
+    key: "bb_breakout",
+    title: "Bollinger Breakout",
+    tag: "пробой",
+    desc: "Пробой: вход, когда цена закрывается выше верхней полосы и держится над EMA50. Ловит выход из сжатия.",
+    build: () => ({
+      ...makeNewStrategy(),
+      name: "Bollinger Breakout · 1h",
+      sources: ["price"],
+      indicators: [
+        { uid: "bb02", id: "bb", params: { period: 20, mult: 2 } },
+        { uid: "em03", id: "ema", params: { period: 50 } },
+      ],
+      side: "both", minConfidence: 76,
+      entry: [
+        { uid: "e1", left: "price", op: "cross_above", right: "bb02", connector: null },
+        { uid: "e2", left: "price", op: "gt", right: "em03", connector: "AND" },
+      ],
+      exit: { type: "trailing", tp: 6, sl: 3, trailing: 2, candles: 24 },
       sizing: "pct",
     }),
   },
@@ -825,6 +870,19 @@ function StrategyPreview({ strategy, asset, step }) {
     return out;
   }, [candles, strategy.indicators]);
 
+  const bb = useMemo(() => {
+    const has = strategy.indicators.find(i => i.id === "bb");
+    if (!has || candles.length < 25 || typeof taBollinger !== "function") return null;
+    const period = has.params?.period || 20, mult = has.params?.mult || 2;
+    const closes = candles.map(c => c.close);
+    const out = [];
+    for (let idx = candles.length - 50; idx < candles.length; idx++) {
+      const r = taBollinger(closes.slice(0, idx + 1), period, mult);
+      out.push({ upper: r.upper, mid: r.mid, lower: r.lower });
+    }
+    return out;
+  }, [candles, strategy.indicators]);
+
   const s = bt ? bt.stats : null;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -833,7 +891,7 @@ function StrategyPreview({ strategy, asset, step }) {
         <div style={{ background: "var(--bg-1)", border: "1px solid var(--line)", borderRadius: 4, padding: 8 }}>
           {loading
             ? <div style={{ height: 200, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: 11 }}>загрузка свечей Bybit…</div>
-            : <PreviewChart candles={chartCandles} ema={ema} st={st} markers={chartMarkers} width={400} height={200} />}
+            : <PreviewChart candles={chartCandles} ema={ema} st={st} bb={bb} markers={chartMarkers} width={400} height={200} />}
           {rsi && !loading && (
             <div style={{ marginTop: 4 }}>
               <div style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--text-dim)", marginBottom: 2 }}>RSI {strategy.indicators.find(i => i.id === "rsi").params.period}</div>
@@ -878,17 +936,22 @@ function StrategyPreview({ strategy, asset, step }) {
   );
 }
 
-function PreviewChart({ candles, ema, st, markers, width = 400, height = 200 }) {
+function PreviewChart({ candles, ema, st, bb, markers, width = 400, height = 200 }) {
   const lows = candles.map(c => c.lo), highs = candles.map(c => c.hi);
   const stVals = st ? st.map(p => p.v).filter(v => isFinite(v) && v > 0) : [];
-  const min = Math.min(...lows, ...stVals);
-  const max = Math.max(...highs, ...stVals);
+  const bbVals = bb ? bb.flatMap(p => [p.upper, p.lower]).filter(v => isFinite(v) && v > 0) : [];
+  const min = Math.min(...lows, ...stVals, ...bbVals);
+  const max = Math.max(...highs, ...stVals, ...bbVals);
   const range = (max - min) || 1;
   const stepX = width / candles.length;
   const candleW = Math.max(2, stepX * 0.6);
   const y = v => 8 + (1 - (v - min) / range) * (height - 16);
 
   const emaPath = ema ? ema.map((v, i) => `${i === 0 ? "M" : "L"}${i * stepX + stepX/2},${y(v)}`).join(" ") : null;
+
+  // Bollinger bands — upper/lower dashed, mid faint solid
+  const bbLine = (key) => bb ? bb.map((p, i) => `${i === 0 ? "M" : "L"}${i * stepX + stepX/2},${y(p[key])}`).join(" ") : null;
+  const bbUpper = bbLine("upper"), bbMid = bbLine("mid"), bbLower = bbLine("lower");
 
   // Supertrend line — drawn as coloured segments (green in uptrend, red in downtrend)
   const stSegs = [];
@@ -918,6 +981,13 @@ function PreviewChart({ candles, ema, st, markers, width = 400, height = 200 }) 
           </g>
         );
       })}
+      {bb && (
+        <g>
+          <path d={bbUpper} fill="none" stroke="var(--blue)" strokeWidth={0.9} strokeDasharray="3 2" opacity={0.7} />
+          <path d={bbLower} fill="none" stroke="var(--blue)" strokeWidth={0.9} strokeDasharray="3 2" opacity={0.7} />
+          <path d={bbMid} fill="none" stroke="var(--blue)" strokeWidth={0.7} opacity={0.35} />
+        </g>
+      )}
       {emaPath && (
         <path d={emaPath} fill="none" stroke="var(--accent)" strokeWidth={1.2} strokeDasharray="0" opacity={0.85} />
       )}

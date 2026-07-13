@@ -196,6 +196,25 @@ function taDmi(candles, period = 14) {
   return { plusDI, minusDI, adx };
 }
 
+/* Bollinger Bands(period, mult) → { upper, mid, lower, pctB, bandwidth }.
+ * SMA basis ± mult·σ. Independent implementation (own math, no GPL code) — unlocks
+ * mean-reversion setups (e.g. long when price rides the lower band + RSI oversold).
+ * pctB: 0 at lower band, 1 at upper. bandwidth (%): squeeze/expansion gauge. */
+function taBollinger(values, period = 20, mult = 2) {
+  const n = values ? values.length : 0;
+  if (n < period) { const p = (values && values[n - 1]) || 0; return { upper: p, mid: p, lower: p, pctB: 0.5, bandwidth: 0 }; }
+  const win = values.slice(n - period);
+  const mid = win.reduce((s, v) => s + v, 0) / period;
+  const sd = Math.sqrt(win.reduce((s, v) => s + (v - mid) ** 2, 0) / period);
+  const upper = mid + mult * sd, lower = mid - mult * sd;
+  const price = values[n - 1];
+  return {
+    upper, mid, lower,
+    pctB: upper === lower ? 0.5 : (price - lower) / (upper - lower),
+    bandwidth: mid ? (upper - lower) / mid * 100 : 0,
+  };
+}
+
 /* Attribute a signal to the agent whose domain drove it (cosmetic, but honest) */
 function agentForSignal(a) {
   const macdTurn = a.macd && ((a.side === "buy" && a.macd.hist > 0 && a.macd.histPrev <= 0) ||
@@ -374,5 +393,5 @@ function computeMarketMetrics(candles, ctx = {}) {
 Object.assign(window, {
   analyzeMarket, taEma, taEmaSeries, taRsi, taMacd, taAtr, agentForSignal,
   taVolAnomaly, computeMarketMetrics,
-  taSmaSeries, taRsiSeries, taStochRsi, taSupertrend, taDmi,
+  taSmaSeries, taRsiSeries, taStochRsi, taSupertrend, taDmi, taBollinger,
 });
