@@ -16,6 +16,9 @@ const INDICATOR_TYPES = [
   { id: "stochrsi",   ru: "Stoch RSI",            params: ["rsi", "stoch"], defaults: { rsi: 14, stoch: 14 } },
   { id: "dmi",        ru: "DMI / ADX",            params: ["period"], defaults: { period: 14 } },
   { id: "bb",         ru: "Bollinger Bands",      params: ["period", "mult"], defaults: { period: 20, mult: 2 } },
+  { id: "cci",        ru: "CCI",                  params: ["period"], defaults: { period: 20 } },
+  { id: "psar",       ru: "Parabolic SAR",        params: ["step", "max"], defaults: { step: 0.02, max: 0.2 } },
+  { id: "ao",         ru: "Awesome Osc.",         params: ["fast", "slow"], defaults: { fast: 5, slow: 34 } },
   { id: "vwap",       ru: "VWAP",                 params: [],         defaults: {} },
   { id: "vol",        ru: "Volume Profile",       params: ["window"], defaults: { window: 24 } },
   { id: "atr",        ru: "ATR (волатильность)",  params: ["period"], defaults: { period: 14 } },
@@ -179,6 +182,50 @@ const STRATEGY_PRESETS = [
       entry: [
         { uid: "e1", left: "price", op: "cross_above", right: "bb02", connector: null },
         { uid: "e2", left: "price", op: "gt", right: "em03", connector: "AND" },
+      ],
+      exit: { type: "trailing", tp: 6, sl: 3, trailing: 2, candles: 24 },
+      sizing: "pct",
+    }),
+  },
+  {
+    key: "cci_rev",
+    title: "CCI Reversal",
+    tag: "возврат",
+    desc: "Лонг из перепроданности: CCI ниже −100 при цене над EMA50 (тренд вверх, откуп отката).",
+    build: () => ({
+      ...makeNewStrategy(),
+      name: "CCI Reversal · 1h",
+      sources: ["price"],
+      indicators: [
+        { uid: "cc01", id: "cci", params: { period: 20 } },
+        { uid: "em04", id: "ema", params: { period: 50 } },
+      ],
+      side: "buy", minConfidence: 72,
+      entry: [
+        { uid: "e1", left: "cc01", op: "lt", right: "value", rightValue: -100, connector: null },
+        { uid: "e2", left: "price", op: "gt", right: "em04", connector: "AND" },
+      ],
+      exit: { type: "tp_sl", tp: 5, sl: 3, trailing: 2, candles: 24 },
+      sizing: "pct",
+    }),
+  },
+  {
+    key: "psar_trend",
+    title: "Parabolic SAR Trend",
+    tag: "тренд",
+    desc: "Трейлинг по тренду: SAR под ценой (аптренд) + подтверждение над EMA50. Выход по трейлинг-стопу.",
+    build: () => ({
+      ...makeNewStrategy(),
+      name: "Parabolic SAR Trend · 1h",
+      sources: ["price"],
+      indicators: [
+        { uid: "ps01", id: "psar", params: { step: 0.02, max: 0.2 } },
+        { uid: "em05", id: "ema", params: { period: 50 } },
+      ],
+      side: "both", minConfidence: 76,
+      entry: [
+        { uid: "e1", left: "price", op: "gt", right: "ps01", connector: null },
+        { uid: "e2", left: "price", op: "gt", right: "em05", connector: "AND" },
       ],
       exit: { type: "trailing", tp: 6, sl: 3, trailing: 2, candles: 24 },
       sizing: "pct",
@@ -883,6 +930,18 @@ function StrategyPreview({ strategy, asset, step }) {
     return out;
   }, [candles, strategy.indicators]);
 
+  const psar = useMemo(() => {
+    const has = strategy.indicators.find(i => i.id === "psar");
+    if (!has || candles.length < 20 || typeof taParabolicSar !== "function") return null;
+    const step = has.params?.step || 0.02, mx = has.params?.max || 0.2;
+    const out = [];
+    for (let idx = candles.length - 50; idx < candles.length; idx++) {
+      const r = taParabolicSar(candles.slice(0, idx + 1), step, mx);
+      out.push({ v: r.value, dir: r.dir });
+    }
+    return out;
+  }, [candles, strategy.indicators]);
+
   const s = bt ? bt.stats : null;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -891,7 +950,7 @@ function StrategyPreview({ strategy, asset, step }) {
         <div style={{ background: "var(--bg-1)", border: "1px solid var(--line)", borderRadius: 4, padding: 8 }}>
           {loading
             ? <div style={{ height: 200, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: 11 }}>загрузка свечей Bybit…</div>
-            : <PreviewChart candles={chartCandles} ema={ema} st={st} bb={bb} markers={chartMarkers} width={400} height={200} />}
+            : <PreviewChart candles={chartCandles} ema={ema} st={st} bb={bb} psar={psar} markers={chartMarkers} width={400} height={200} />}
           {rsi && !loading && (
             <div style={{ marginTop: 4 }}>
               <div style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--text-dim)", marginBottom: 2 }}>RSI {strategy.indicators.find(i => i.id === "rsi").params.period}</div>
@@ -936,12 +995,13 @@ function StrategyPreview({ strategy, asset, step }) {
   );
 }
 
-function PreviewChart({ candles, ema, st, bb, markers, width = 400, height = 200 }) {
+function PreviewChart({ candles, ema, st, bb, psar, markers, width = 400, height = 200 }) {
   const lows = candles.map(c => c.lo), highs = candles.map(c => c.hi);
   const stVals = st ? st.map(p => p.v).filter(v => isFinite(v) && v > 0) : [];
   const bbVals = bb ? bb.flatMap(p => [p.upper, p.lower]).filter(v => isFinite(v) && v > 0) : [];
-  const min = Math.min(...lows, ...stVals, ...bbVals);
-  const max = Math.max(...highs, ...stVals, ...bbVals);
+  const psarVals = psar ? psar.map(p => p.v).filter(v => isFinite(v) && v > 0) : [];
+  const min = Math.min(...lows, ...stVals, ...bbVals, ...psarVals);
+  const max = Math.max(...highs, ...stVals, ...bbVals, ...psarVals);
   const range = (max - min) || 1;
   const stepX = width / candles.length;
   const candleW = Math.max(2, stepX * 0.6);
@@ -993,6 +1053,12 @@ function PreviewChart({ candles, ema, st, bb, markers, width = 400, height = 200
       )}
       {stSegs.map((s, i) => (
         <line key={`st${i}`} x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2} stroke={s.color} strokeWidth={1.3} opacity={0.9} />
+      ))}
+      {psar && psar.map((p, i) => (
+        isFinite(p.v) && p.v > 0
+          ? <circle key={`ps${i}`} cx={i * stepX + stepX / 2} cy={y(p.v)} r={1.1}
+              fill={p.dir > 0 ? "var(--green)" : "var(--red)"} opacity={0.85} />
+          : null
       ))}
       {markers.map((m, i) => {
         const cx = m.idx * stepX + stepX / 2;

@@ -215,6 +215,57 @@ function taBollinger(values, period = 20, mult = 2) {
   };
 }
 
+/* Commodity Channel Index(period) → scalar. <-100 oversold, >+100 overbought.
+ * Own implementation; only the CCI-reversal *idea* is reused from the GPL catalog. */
+function taCci(candles, period = 20) {
+  const n = candles ? candles.length : 0;
+  if (n < period) return 0;
+  const tp = candles.map(c => (c.hi + c.lo + c.close) / 3);
+  const win = tp.slice(n - period);
+  const sma = win.reduce((s, v) => s + v, 0) / period;
+  const meanDev = win.reduce((s, v) => s + Math.abs(v - sma), 0) / period;
+  return meanDev === 0 ? 0 : (tp[n - 1] - sma) / (0.015 * meanDev);
+}
+
+/* Parabolic SAR(step, maxAf) → { value, dir(+1 up / -1 down), flip }. Trailing
+ * trend/stop dots. Standard Wilder iterative algorithm (own implementation). */
+function taParabolicSar(candles, step = 0.02, maxAf = 0.2) {
+  const n = candles ? candles.length : 0;
+  if (n < 3) return { value: n ? candles[n - 1].close : 0, dir: 1, flip: false };
+  let isUp = candles[1].close >= candles[0].close;
+  let af = step;
+  let ep = isUp ? candles[0].hi : candles[0].lo;
+  let sar = isUp ? candles[0].lo : candles[0].hi;
+  let dirBefore = isUp;
+  for (let i = 1; i < n; i++) {
+    const c = candles[i];
+    dirBefore = isUp;
+    let next = sar + af * (ep - sar);
+    if (isUp) {
+      next = Math.min(next, candles[i - 1].lo, candles[i >= 2 ? i - 2 : i - 1].lo);
+      if (c.lo < next) { isUp = false; next = ep; ep = c.lo; af = step; }
+      else if (c.hi > ep) { ep = c.hi; af = Math.min(maxAf, af + step); }
+    } else {
+      next = Math.max(next, candles[i - 1].hi, candles[i >= 2 ? i - 2 : i - 1].hi);
+      if (c.hi > next) { isUp = true; next = ep; ep = c.hi; af = step; }
+      else if (c.lo < ep) { ep = c.lo; af = Math.min(maxAf, af + step); }
+    }
+    sar = next;
+  }
+  return { value: sar, dir: isUp ? 1 : -1, flip: dirBefore !== isUp };
+}
+
+/* Awesome Oscillator → { value, prev }. SMA(median,5) − SMA(median,34); median=(hi+lo)/2.
+ * Zero-cross / twin-peaks momentum. Own implementation. */
+function taAwesome(candles, fast = 5, slow = 34) {
+  const n = candles ? candles.length : 0;
+  if (n < slow + 1) return { value: 0, prev: 0 };
+  const mp = candles.map(c => (c.hi + c.lo) / 2);
+  const sma = (p, end) => { let s = 0; for (let i = end - p + 1; i <= end; i++) s += mp[i]; return s / p; };
+  const ao = end => sma(fast, end) - sma(slow, end);
+  return { value: ao(n - 1), prev: ao(n - 2) };
+}
+
 /* Attribute a signal to the agent whose domain drove it (cosmetic, but honest) */
 function agentForSignal(a) {
   const macdTurn = a.macd && ((a.side === "buy" && a.macd.hist > 0 && a.macd.histPrev <= 0) ||
@@ -394,4 +445,5 @@ Object.assign(window, {
   analyzeMarket, taEma, taEmaSeries, taRsi, taMacd, taAtr, agentForSignal,
   taVolAnomaly, computeMarketMetrics,
   taSmaSeries, taRsiSeries, taStochRsi, taSupertrend, taDmi, taBollinger,
+  taCci, taParabolicSar, taAwesome,
 });
