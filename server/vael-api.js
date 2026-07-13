@@ -56,6 +56,30 @@ async function getNews() {
   return newsCache.items;
 }
 
+/* ── Macro market data (Fear&Greed + global cap / BTC dominance) ── */
+const MARKET_CACHE_MS = 5 * 60 * 1000;
+let marketCache = { ts: 0, data: null };
+async function getMarket() {
+  if (marketCache.data && Date.now() - marketCache.ts < MARKET_CACHE_MS) return marketCache.data;
+  let fng = null, global = null;
+  try {
+    const j = await (await fetch("https://api.alternative.me/fng/")).json();
+    const d = j.data && j.data[0];
+    if (d) fng = { value: +d.value, label: d.value_classification };
+  } catch (_) {}
+  try {
+    const j = await (await fetch("https://api.coingecko.com/api/v3/global")).json();
+    const d = j.data;
+    if (d) global = {
+      mcapUsd: d.total_market_cap.usd, volUsd: d.total_volume.usd,
+      btcDom: d.market_cap_percentage.btc, ethDom: d.market_cap_percentage.eth,
+      chg24h: d.market_cap_change_percentage_24h_usd,
+    };
+  } catch (_) {}
+  marketCache = { ts: Date.now(), data: { fng, global } };
+  return marketCache.data;
+}
+
 /* ── Optional LLM proxy (keeps the Anthropic key on the server) ── */
 async function askLLM(q, context) {
   const key = process.env.ANTHROPIC_API_KEY;
@@ -76,19 +100,39 @@ async function askLLM(q, context) {
   } catch (e) { return { ok: false, error: e.message }; }
 }
 
+function readBody(req) {
+  return new Promise(resolve => {
+    let data = "";
+    req.on("data", c => { data += c; if (data.length > 1e6) req.destroy(); });
+    req.on("end", () => resolve(data));
+    req.on("error", () => resolve(""));
+  });
+}
+
 const server = http.createServer(async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "content-type");
   res.setHeader("Content-Type", "application/json; charset=utf-8");
+  if (req.method === "OPTIONS") { res.statusCode = 204; res.end(); return; }
   const u = new URL(req.url, "http://localhost");
   try {
-    if (u.pathname === "/api/health") { res.end(JSON.stringify({ ok: true, ts: Date.now() })); return; }
+    if (u.pathname === "/api/health") { res.end(JSON.stringify({ ok: true, ts: Date.now(), llm: !!process.env.ANTHROPIC_API_KEY })); return; }
     if (u.pathname === "/api/news") {
       const items = await getNews();
       res.end(JSON.stringify({ ok: true, count: items.length, items }));
       return;
     }
+    if (u.pathname === "/api/market") {
+      res.end(JSON.stringify({ ok: true, ...(await getMarket()) }));
+      return;
+    }
     if (u.pathname === "/api/assistant") {
-      const out = await askLLM(u.searchParams.get("q") || "", u.searchParams.get("ctx") || "");
+      let q = u.searchParams.get("q") || "", ctx = u.searchParams.get("ctx") || "";
+      if (req.method === "POST") {
+        try { const b = JSON.parse((await readBody(req)) || "{}"); q = b.q || q; ctx = b.ctx || ctx; } catch (_) {}
+      }
+      const out = await askLLM(q, ctx);
       res.statusCode = out.ok ? 200 : 503;
       res.end(JSON.stringify(out));
       return;

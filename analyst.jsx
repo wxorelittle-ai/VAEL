@@ -93,8 +93,13 @@ function AnalystPage({ lang }) {
 
   async function generate() {
     setLoading(true);
-    const coins = await gatherAnalystData();
-    setReport(buildAnalystReport(coins));
+    const [coins, macro] = await Promise.all([
+      gatherAnalystData(),
+      fetch("/api/market").then(r => (r.ok ? r.json() : null)).catch(() => null), // backend macro (graceful)
+    ]);
+    const rep = buildAnalystReport(coins);
+    if (rep) rep.macro = macro && macro.ok ? macro : null;
+    setReport(rep);
     setTs(new Date());
     setLoading(false);
   }
@@ -130,6 +135,14 @@ function AnalystPage({ lang }) {
               <AnStat label="Волатильность ATR" v={`${report.avgVol.toFixed(2)}%`} c="var(--amber)" />
               <AnStat label="Активов" v={report.coinCount} c="var(--text-bright)" />
             </div>
+            {report.macro && (report.macro.fng || report.macro.global) && (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginTop: 10 }}>
+                {report.macro.fng && <AnStat label="Fear & Greed" v={`${report.macro.fng.value} · ${report.macro.fng.label}`} c={report.macro.fng.value < 45 ? "var(--red)" : report.macro.fng.value > 55 ? "var(--green)" : "var(--amber)"} />}
+                {report.macro.global && <AnStat label="Капитализация" v={`$${(report.macro.global.mcapUsd / 1e12).toFixed(2)}T`} c="var(--text-bright)" />}
+                {report.macro.global && <AnStat label="Доминация BTC" v={`${report.macro.global.btcDom.toFixed(1)}%`} c="var(--amber)" />}
+                {report.macro.global && <AnStat label="Рынок · 24ч" v={`${report.macro.global.chg24h >= 0 ? "+" : ""}${report.macro.global.chg24h.toFixed(2)}%`} c={report.macro.global.chg24h >= 0 ? "var(--green)" : "var(--red)"} />}
+              </div>
+            )}
             <div style={anProse}>
               <span style={{ color: "var(--accent)", fontWeight: 600 }}>↳ analyst.agt: </span>
               Рынок в <b style={{ color: "var(--text-bright)" }}>{report.regime}</b> режиме (средний сентимент {report.avgSent.toFixed(2)}), волатильность {report.avgVol.toFixed(2)}% ATR.

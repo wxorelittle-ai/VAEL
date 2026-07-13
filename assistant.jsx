@@ -192,8 +192,16 @@ function AssistantChat() {
         try { reply = (await window.claude.complete(prompt)).trim(); }
         catch (_) { reply = assistantAnalyze(content, ctx); }
       } else {
-        // self-hosted / no LLM → deterministic data-driven analysis
-        reply = assistantAnalyze(content, ctx);
+        // try the backend LLM proxy (real Claude, key on the server); fall back to deterministic
+        let backendReply = null;
+        try {
+          const res = await fetch("/api/assistant", {
+            method: "POST", headers: { "content-type": "application/json" },
+            body: JSON.stringify({ q: content, ctx: `${SYSTEM_CONTEXT}\n\nАКТУАЛЬНЫЕ ДАННЫЕ (Bybit · ${ctx.coin}):\n${assistantDataSummary(ctx)}` }),
+          });
+          if (res.ok) { const j = await res.json(); if (j && j.ok && j.text) backendReply = j.text.trim(); }
+        } catch (_) { /* no backend — use deterministic */ }
+        reply = backendReply || assistantAnalyze(content, ctx);
       }
       setMessages(prev => [...prev, { role: "assistant", content: reply, ts: nowMsgTs() }]);
     } catch (e) {
