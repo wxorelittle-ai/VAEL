@@ -37,15 +37,26 @@ function scoreAirdrop(p) {
 
 function AirdropRadarPage({ lang }) {
   const [sortBy, setSortBy] = useState("score");
-  const scored = useMemo(() => AIRDROP_PROJECTS.map(p => ({ ...p, ...scoreAirdrop(p) }))
-    .sort((a, b) => sortBy === "score" ? b.score - a.score : sortBy === "risk" ? a.scamRisk - b.scamRisk : b.fundingM - a.fundingM), [sortBy]);
+  const [liveTvl, setLiveTvl] = useState(null); // real TVL from backend (DeFiLlama), graceful
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/airdrop-tvl").then(r => (r.ok ? r.json() : null))
+      .then(j => { if (!cancelled && j && j.ok) setLiveTvl(j.tvl); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+  const scored = useMemo(() => AIRDROP_PROJECTS.map(p => {
+    const hasLive = liveTvl && liveTvl[p.id] != null;
+    const proj = { ...p, tvlM: hasLive ? liveTvl[p.id] : p.tvlM, tvlLive: hasLive };
+    return { ...proj, ...scoreAirdrop(proj) };
+  }).sort((a, b) => sortBy === "score" ? b.score - a.score : sortBy === "risk" ? a.scamRisk - b.scamRisk : b.fundingM - a.fundingM), [sortBy, liveTvl]);
   const [sel, setSel] = useState(null);
   const promising = scored.filter(p => p.score >= 68).length;
+  const liveCount = liveTvl ? Object.keys(liveTvl).length : 0;
 
   return (
     <div data-screen-label="15 Airdrops" style={{ height: "100%", padding: "var(--gap)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
       <PageHeader title={lang === "en" ? "AIRDROP RADAR" : "AIRDROP · РАДАР"}
-        sub={`AI-оценка перспектив · ${AIRDROP_PROJECTS.length} проектов · ${promising} перспективных · scam-scan`}
+        sub={`AI-оценка перспектив · ${AIRDROP_PROJECTS.length} проектов · ${promising} перспективных · scam-scan${liveCount ? ` · ${liveCount} live TVL (DeFiLlama)` : ""}`}
         actions={<>
           {["score", "funding", "risk"].map(k => (
             <button key={k} onClick={() => setSortBy(k)} className={`btn ${sortBy === k ? "btn-accent" : ""}`}>
@@ -92,7 +103,7 @@ function AirdropRadarPage({ lang }) {
             <div style={{ fontSize: 12, color: "var(--text-mid)", lineHeight: 1.5, padding: "8px 10px", background: "var(--bg-0)", border: "1px solid var(--line)", borderRadius: 4 }}>{sel.note}</div>
             <div>
               <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: 0.15, fontWeight: 600, textTransform: "uppercase", marginBottom: 6 }}>Факторы оценки</div>
-              {[["Финансирование", sel.fundingM ? `$${sel.fundingM}M` : "—"], ["Tier-1 инвесторы", sel.tier1 ? "да" : "нет"], ["TVL", sel.tvlM ? (sel.tvlM >= 1000 ? `$${(sel.tvlM / 1000).toFixed(1)}B` : `$${sel.tvlM}M`) : "—"], ["Активность", `${sel.activity}/100`], ["Риск скама", `${sel.scamRisk}%`], ["Стадия", sel.stage]].map(([k, v]) => (
+              {[["Финансирование", sel.fundingM ? `$${sel.fundingM}M` : "—"], ["Tier-1 инвесторы", sel.tier1 ? "да" : "нет"], ["TVL" + (sel.tvlLive ? " · live" : ""), (sel.tvlLive ? "● " : "") + (sel.tvlM ? (sel.tvlM >= 1000 ? `$${(sel.tvlM / 1000).toFixed(1)}B` : `$${sel.tvlM}M`) : "—")], ["Активность", `${sel.activity}/100`], ["Риск скама", `${sel.scamRisk}%`], ["Стадия", sel.stage]].map(([k, v]) => (
                 <div key={k} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", borderBottom: "1px solid var(--line)", fontFamily: "var(--font-mono)", fontSize: 11 }}>
                   <span style={{ color: "var(--text-dim)" }}>{k}</span><span style={{ color: "var(--text)" }}>{v}</span>
                 </div>

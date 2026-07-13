@@ -80,6 +80,32 @@ async function getMarket() {
   return marketCache.data;
 }
 
+/* ── Real TVL for Airdrop Radar projects (DeFiLlama, free) ── */
+const AIRDROP_TVL_MAP = [
+  { key: "hyperliq", type: "protocol", id: "hyperliquid" },
+  { key: "eigen",    type: "protocol", id: "eigenlayer" },
+  { key: "berachain",type: "chain",    id: "Berachain" },
+  { key: "scroll2",  type: "chain",    id: "Scroll" },
+  { key: "monad",    type: "chain",    id: "Monad" },
+  { key: "fuel",     type: "chain",    id: "Fuel" },
+];
+let tvlCache = { ts: 0, data: null };
+async function getAirdropTvl() {
+  if (tvlCache.data && Date.now() - tvlCache.ts < 10 * 60 * 1000) return tvlCache.data;
+  const out = {};
+  try {
+    const chains = await (await fetch("https://api.llama.fi/v2/chains")).json();
+    const byName = {};
+    (chains || []).forEach(c => { byName[c.name] = c.tvl; });
+    AIRDROP_TVL_MAP.filter(m => m.type === "chain").forEach(m => { if (byName[m.id] != null) out[m.key] = Math.round(byName[m.id] / 1e6); });
+  } catch (_) {}
+  await Promise.all(AIRDROP_TVL_MAP.filter(m => m.type === "protocol").map(async m => {
+    try { const v = await (await fetch("https://api.llama.fi/tvl/" + m.id)).json(); if (typeof v === "number") out[m.key] = Math.round(v / 1e6); } catch (_) {}
+  }));
+  tvlCache = { ts: Date.now(), data: out };
+  return out;
+}
+
 /* ── Optional LLM proxy (keeps the Anthropic key on the server) ── */
 async function askLLM(q, context) {
   const key = process.env.ANTHROPIC_API_KEY;
@@ -125,6 +151,10 @@ const server = http.createServer(async (req, res) => {
     }
     if (u.pathname === "/api/market") {
       res.end(JSON.stringify({ ok: true, ...(await getMarket()) }));
+      return;
+    }
+    if (u.pathname === "/api/airdrop-tvl") {
+      res.end(JSON.stringify({ ok: true, tvl: await getAirdropTvl() }));
       return;
     }
     if (u.pathname === "/api/assistant") {
