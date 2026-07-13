@@ -1,0 +1,7 @@
+# Nested git clones / backups — not part of the app
+VAEL/
+Nuar AI/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db

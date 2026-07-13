@@ -59,10 +59,10 @@ function genTrendCandles(n, base, vol = 0.01, trendBias = 0) {
  * subsequent price. Produces an honest track record (verified/failed). */
 function makeInitialSignals(candles) {
   const out = [];
-  if (!candles || candles.length < 36 || typeof analyzeMarket !== "function") return out;
+  if (!candles || candles.length < 62 || typeof analyzeMarket !== "function") return out;
   const HORIZON = 6; // candles ahead to judge outcome
   let id = 1840;
-  for (let idx = 30; idx <= candles.length - HORIZON - 1; idx += 2) {
+  for (let idx = 55; idx <= candles.length - HORIZON - 1; idx += 2) {
     const a = analyzeMarket(candles.slice(0, idx + 1));
     if (!a || !a.setup) continue;
     const entry = candles[idx].close;
@@ -73,6 +73,7 @@ function makeInitialSignals(candles) {
       id: `S-${id++}`, candleIdx: idx, price: entry, side: a.side,
       confidence: a.confidence, reasoning: a.reasons.join(" · "),
       agent: a.agent, status: success ? "verified" : "failed",
+      sl: a.sl, tp: a.tp,
       outcome: a.side === "buy" ? movedPct : -movedPct, ts: nowTsHM(),
     });
     if (out.length >= 6) break;
@@ -83,7 +84,7 @@ function makeInitialSignals(candles) {
     out.push({
       id: `S-${id++}`, candleIdx: candles.length - 2, price: candles[candles.length - 1].close,
       side: cur.side, confidence: cur.confidence, reasoning: cur.reasons.join(" · "),
-      agent: cur.agent, status: "active", outcome: 0, ts: nowTsHM(),
+      agent: cur.agent, status: "active", sl: cur.sl, tp: cur.tp, outcome: 0, ts: nowTsHM(),
     });
   }
   return out;
@@ -277,7 +278,9 @@ function CryptoSignalsPanel({ lang }) {
 
   // ─── real market data from Bybit (REST history + live WebSocket) ───
   // 1-minute candles keep the chart lively; the agent signal/trade layer runs on top.
-  const { candles, ticker, status } = useBybitMarket(asset.bybit, "1", 90);
+  // 15-minute candles: the timeframe where the TA engine shows a real positive
+  // edge in backtest (5m was too noisy/negative, 1h too slow). EMA50/MACD/ATR.
+  const { candles, ticker, status } = useBybitMarket(asset.bybit, "15", 120);
   const { orderbook, trades } = useBybitL2(asset.bybit, 50, 40);
   const deriv = useBybitLinearStats(asset.bybit, 15000);
   const longShort = useBybitLongShort(asset.bybit, 60000);
@@ -376,33 +379,35 @@ function CryptoSignalsPanel({ lang }) {
       return s;
     }));
 
-    // emit a new active signal ONLY when the TA engine finds a genuine setup
-    setSignals(prev => {
-      if (prev.some(s => s.status === "active")) return prev;
+    // emit a new active signal ONLY when the TA engine finds a genuine setup.
+    // Side effects are kept OUT of the setSignals updater (no setState-in-render).
+    if (!signals.some(s => s.status === "active")) {
       const a = typeof analyzeMarket === "function" ? analyzeMarket(candles) : null;
-      if (!a || !a.setup) return prev;
-      const newSig = {
-        id: `S-${1845 + prev.length}`,
-        candleIdx: candles.length - 1,
-        price: lastPrice,
-        side: a.side,
-        confidence: a.confidence,
-        reasoning: a.reasons.join(" · "),
-        agent: a.agent,
-        status: "active",
-        outcome: 0,
-        ts: nowTsHM(),
-      };
-      setPendingFlash(newSig.id);
-      setTimeout(() => setPendingFlash(null), 2000);
-      window.__emitToast?.({
-        kind: a.side === "buy" ? "buy" : "sell",
-        title: `${asset.sym} · ${a.side === "buy" ? "ПОКУПКА" : "ПРОДАЖА"} @ ${lastPrice.toFixed(2)}`,
-        body: newSig.reasoning,
-        meta: `${newSig.agent} · conf ${newSig.confidence}% · RSI ${a.rsi.toFixed(0)}`,
-      });
-      return [...prev.slice(-10), newSig];
-    });
+      if (a && a.setup) {
+        const newSig = {
+          id: `S-${1845 + signals.length}`,
+          candleIdx: candles.length - 1,
+          price: lastPrice,
+          side: a.side,
+          confidence: a.confidence,
+          reasoning: a.reasons.join(" · "),
+          agent: a.agent,
+          status: "active",
+          sl: a.sl, tp: a.tp,
+          outcome: 0,
+          ts: nowTsHM(),
+        };
+        setSignals(prev => (prev.some(s => s.status === "active") ? prev : [...prev.slice(-10), newSig]));
+        setPendingFlash(newSig.id);
+        setTimeout(() => setPendingFlash(null), 2000);
+        window.__emitToast?.({
+          kind: a.side === "buy" ? "buy" : "sell",
+          title: `${asset.sym} · ${a.side === "buy" ? "ПОКУПКА" : "ПРОДАЖА"} @ ${lastPrice.toFixed(2)}`,
+          body: newSig.reasoning,
+          meta: `${newSig.agent} · conf ${newSig.confidence}% · RSI ${a.rsi.toFixed(0)}`,
+        });
+      }
+    }
   }, 4800);
 
   // ─── trade actions ────
@@ -415,8 +420,8 @@ function CryptoSignalsPanel({ lang }) {
       side: signal.side,
       entry: price,
       size: form.amount,
-      sl: signal.side === "buy" ? price * (1 - slPct) : price * (1 + slPct),
-      tp: signal.side === "buy" ? price * (1 + tpPct) : price * (1 - tpPct),
+      sl: signal.sl != null ? signal.sl : (signal.side === "buy" ? price * (1 - slPct) : price * (1 + slPct)),
+      tp: signal.tp != null ? signal.tp : (signal.side === "buy" ? price * (1 + tpPct) : price * (1 - tpPct)),
       signalId: signal.id,
       openedAt: nowTsHM(),
       pnl: 0, pnlPct: 0, currentPrice: price,
@@ -455,33 +460,25 @@ function CryptoSignalsPanel({ lang }) {
   }
 
   function closePosition(id, exitPriceOverride, reason = "manual") {
-    setPositions(prev => {
-      const closing = prev.find(p => p.id === id);
-      if (!closing) return prev;
-      const exitPrice = exitPriceOverride ?? candles[candles.length - 1].close;
-      const pnl = closing.side === "buy"
-        ? (exitPrice - closing.entry) * (closing.size / closing.entry)
-        : (closing.entry - exitPrice) * (closing.size / closing.entry);
-      const pnlPct = closing.side === "buy"
-        ? (exitPrice - closing.entry) / closing.entry * 100
-        : (closing.entry - exitPrice) / closing.entry * 100;
-      setHistory(h => [{
-        ...closing,
-        exitPrice,
-        pnl,
-        pnlPct,
-        closedAt: nowTsHM(),
-        reason,
-      }, ...h].slice(0, 24));
-      // emit toast
-      const reasonLabel = reason === "tp" ? "Take Profit" : reason === "sl" ? "Stop Loss" : "ручное закрытие";
-      window.__emitToast?.({
-        kind: reason === "tp" ? "win" : reason === "sl" ? "loss" : "close",
-        title: `${asset.sym} · позиция закрыта · ${reasonLabel}`,
-        body: `${closing.side === "buy" ? "ЛОНГ" : "ШОРТ"} ${closing.size}$ · вход ${closing.entry.toFixed(2)} → выход ${exitPrice.toFixed(2)}`,
-        meta: `P&L: ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}$ (${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}%)`,
-      });
-      return prev.filter(p => p.id !== id);
+    const closing = positions.find(p => p.id === id);
+    if (!closing) return;
+    const exitPrice = exitPriceOverride ?? candles[candles.length - 1].close;
+    const pnl = closing.side === "buy"
+      ? (exitPrice - closing.entry) * (closing.size / closing.entry)
+      : (closing.entry - exitPrice) * (closing.size / closing.entry);
+    const pnlPct = closing.side === "buy"
+      ? (exitPrice - closing.entry) / closing.entry * 100
+      : (closing.entry - exitPrice) / closing.entry * 100;
+    // pure state updates
+    setPositions(prev => prev.filter(p => p.id !== id));
+    setHistory(h => [{ ...closing, exitPrice, pnl, pnlPct, closedAt: nowTsHM(), reason }, ...h].slice(0, 24));
+    // side effect outside any updater
+    const reasonLabel = reason === "tp" ? "Take Profit" : reason === "sl" ? "Stop Loss" : "ручное закрытие";
+    window.__emitToast?.({
+      kind: reason === "tp" ? "win" : reason === "sl" ? "loss" : "close",
+      title: `${asset.sym} · позиция закрыта · ${reasonLabel}`,
+      body: `${closing.side === "buy" ? "ЛОНГ" : "ШОРТ"} ${closing.size}$ · вход ${closing.entry.toFixed(2)} → выход ${exitPrice.toFixed(2)}`,
+      meta: `P&L: ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}$ (${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}%)`,
     });
   }
 
@@ -501,7 +498,7 @@ function CryptoSignalsPanel({ lang }) {
     <div className="panel" style={{ display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
       <PanelHeader
         title={`ТРЕЙДИНГ-ТЕРМИНАЛ · ${asset.sym}`}
-        meta={`сигналы · демо-сделки · ${asset.name}`}
+        meta={`TA-движок · 15m · ${asset.name}`}
         action={
           <div style={{ display: "flex", gap: 4 }}>
             <button onClick={() => setStudioOpen(true)} style={{

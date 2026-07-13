@@ -1,12 +1,5 @@
 /* strategy-studio.jsx — Visual strategy builder for AI trading signals */
 
-const STRATEGY_BUILTIN = [
-  { id: "ai-momentum", name: "AI Momentum + EMA", custom: false, last30d: 12.4, sharpe: 1.42, trades: 47, winRate: 64 },
-  { id: "ai-mean-rev", name: "Reversion · v6.research",   custom: false, last30d: 8.2, sharpe: 1.18, trades: 92, winRate: 58 },
-  { id: "ai-onchain",  name: "On-chain Whale Follower",   custom: false, last30d: 21.6, sharpe: 1.84, trades: 23, winRate: 78 },
-  { id: "ai-news",     name: "News Sentiment Reactive",   custom: false, last30d: -3.2, sharpe: 0.42, trades: 38, winRate: 47 },
-];
-
 const SOURCE_TYPES = [
   { id: "price",   ru: "Цена и объём",         icon: "$",  desc: "Свечи, OHLCV, объём" },
   { id: "onchain", ru: "On-chain поток",       icon: "⬢",  desc: "Whale transfers, exchange flows" },
@@ -185,13 +178,18 @@ function StrategyStudio({ open, onClose, asset, lang, onSave }) {
                 Далее ›
               </button>
             ) : (
-              <>
-                <button className="btn">▸ Backtest</button>
-                <button onClick={() => { onSave?.(strategy); onClose(); window.__emitToast?.({ kind: "agent", title: "Стратегия сохранена", body: `«${strategy.name}» добавлена в библиотеку`, meta: `ID: ${strategy.id}` }); }}
-                  className="btn btn-accent" disabled={!canAdvance}>
-                  ▸ Сохранить и развернуть
-                </button>
-              </>
+              <button onClick={() => {
+                  try {
+                    const lib = JSON.parse(localStorage.getItem("vael.strategies") || "[]");
+                    lib.unshift({ ...strategy, savedAt: Date.now() });
+                    localStorage.setItem("vael.strategies", JSON.stringify(lib.slice(0, 50)));
+                  } catch (_) {}
+                  onSave?.(strategy); onClose();
+                  window.__emitToast?.({ kind: "agent", title: "Стратегия сохранена", body: `«${strategy.name}» сохранена локально`, meta: `ID: ${strategy.id}` });
+                }}
+                className="btn btn-accent" disabled={!canAdvance}>
+                ▸ Сохранить и развернуть
+              </button>
             )}
           </div>
         </footer>
@@ -451,7 +449,7 @@ function ExitStep({ strategy, setStrategy }) {
           {EXIT_TYPES.map(e => {
             const on = t === e.id;
             return (
-              <button key={e.id} onClick={() => setStrategy(s => ({ ...s, exit: { type: e.id, tp: 4, sl: 2, trailing: 1.5, candles: 12 } }))} style={blockBtnStyle(on)}>
+              <button key={e.id} onClick={() => setStrategy(s => ({ ...s, exit: { tp: 4, sl: 2, trailing: 1.5, candles: 12, ...s.exit, type: e.id } }))} style={blockBtnStyle(on)}>
                 <span style={glyphStyle(on)}>{on ? "✓" : "○"}</span>
                 <span style={{ fontSize: 12, color: on ? "var(--accent)" : "var(--text-bright)" }}>{e.ru}</span>
               </button>
@@ -559,7 +557,7 @@ function ReviewStep({ strategy, setStrategy }) {
         } />
       </div>
 
-      <Hint text="✓ Все блоки готовы. Нажмите «Сохранить и развернуть» — стратегия появится в библиотеке и подключится к strategy.agt для генерации live-сигналов." />
+      <Hint text="✓ Все блоки готовы. Превью выше — реальный бэктест стратегии на живых свечах Bybit (15m). При сохранении стратегия записывается локально (localStorage)." />
     </StepShell>
   );
 }
@@ -573,54 +571,102 @@ function ReviewRow({ label, value }) {
   );
 }
 
-/* ─────── Preview ─────── */
+/* ─────── Preview (real Bybit backtest of the built strategy) ─────── */
+function sideMatches(sigSide, stratSide) {
+  if (stratSide === "both") return true;
+  if (stratSide === "sell") return sigSide === "sell";
+  return sigSide === "buy";
+}
+function studioBacktest(candles, strategy) {
+  if (!candles || candles.length < 60 || typeof analyzeMarket !== "function") return null;
+  const minConf = strategy.minConfidence || 75;
+  const H = 24;
+  const useTpSl = strategy.exit && strategy.exit.type === "tp_sl";
+  const tpPct = useTpSl ? (strategy.exit.tp || 4) / 100 : null;
+  const slPct = useTpSl ? (strategy.exit.sl || 2) / 100 : null;
+  let equity = 100, wins = 0, losses = 0;
+  const markers = [], curve = [{ v: 100 }];
+  let i = 55;
+  while (i <= candles.length - 2) {
+    const a = analyzeMarket(candles.slice(0, i + 1));
+    if (!a || !a.setup || a.confidence < minConf || !sideMatches(a.side, strategy.side)) { i++; continue; }
+    const entry = candles[i].close, side = a.side;
+    const sl = useTpSl ? (side === "buy" ? entry * (1 - slPct) : entry * (1 + slPct)) : a.sl;
+    const tp = useTpSl ? (side === "buy" ? entry * (1 + tpPct) : entry * (1 - tpPct)) : a.tp;
+    const slD = Math.abs(entry - sl) || entry * 0.004;
+    const rr = Math.abs(tp - entry) / slD;
+    let R = null, exitIdx = Math.min(i + H, candles.length - 1);
+    for (let j = i + 1; j <= Math.min(i + H, candles.length - 1); j++) {
+      const c = candles[j];
+      if (side === "buy") { if (c.lo <= sl) { R = -1; exitIdx = j; break; } if (c.hi >= tp) { R = rr; exitIdx = j; break; } }
+      else { if (c.hi >= sl) { R = -1; exitIdx = j; break; } if (c.lo <= tp) { R = rr; exitIdx = j; break; } }
+    }
+    if (R === null) { const xp = candles[exitIdx].close; const mv = side === "buy" ? xp - entry : entry - xp; R = Math.max(-1, Math.min(rr, mv / slD)); }
+    equity += R * (equity * 0.02);
+    if (R > 0) wins++; else losses++;
+    markers.push({ idx: i, side, price: entry });
+    curve.push({ v: equity });
+    i = exitIdx + 1;
+  }
+  const trades = wins + losses;
+  const rets = [];
+  for (let k = 1; k < curve.length; k++) rets.push((curve[k].v - curve[k - 1].v) / curve[k - 1].v);
+  const mean = rets.length ? rets.reduce((s, x) => s + x, 0) / rets.length : 0;
+  const varr = rets.length ? rets.reduce((s, x) => s + (x - mean) ** 2, 0) / rets.length : 0;
+  const sharpe = varr > 0 ? (mean / Math.sqrt(varr)) * Math.sqrt(rets.length) : 0;
+  return { markers, stats: { roi: equity - 100, sharpe, winRate: trades ? wins / trades * 100 : 0, trades } };
+}
+
 function StrategyPreview({ strategy, asset, step }) {
-  const candles = useMemo(() => genTrendCandles(50, 2408, 0.012), [asset]);
-  // simulate strategy markers
-  const markers = useMemo(() => {
-    if (!strategy.entry.length) return [];
-    const out = [];
-    candles.forEach((c, i) => {
-      if (i < 8) return;
-      // mock condition: emaCross + RSI
-      const isEntry = Math.sin(i * 0.5) > 0.4 && Math.random() < 0.18;
-      if (isEntry) {
-        out.push({ idx: i, side: strategy.side === "sell" ? "sell" : "buy", price: c.close });
-      }
-    });
-    return out.slice(0, 8);
-  }, [strategy.entry, strategy.side, candles]);
+  const [candles, setCandles] = useState([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    const sym = typeof toBybitSymbol === "function" ? toBybitSymbol(asset) : String(asset).replace(/[\/\s]/g, "");
+    if (typeof bybitFetchKlines === "function") {
+      bybitFetchKlines(sym, "15", 200)
+        .then(kl => { if (!cancelled) { setCandles(kl); setLoading(false); } })
+        .catch(() => { if (!cancelled) setLoading(false); });
+    } else setLoading(false);
+    return () => { cancelled = true; };
+  }, [asset]);
 
-  // EMA50 overlay if applicable
+  const bt = useMemo(() => (candles.length ? studioBacktest(candles, strategy) : null), [candles, strategy]);
+  const chartCandles = useMemo(() => candles.slice(-50), [candles]);
+  const offset = candles.length - chartCandles.length;
+  const chartMarkers = bt ? bt.markers.filter(m => m.idx >= offset).map(m => ({ ...m, idx: m.idx - offset })).slice(-10) : [];
+
   const ema = useMemo(() => {
-    if (!strategy.indicators.find(i => i.id === "ema")) return null;
-    const period = strategy.indicators.find(i => i.id === "ema")?.params?.period || 50;
-    const arr = [];
-    let avg = candles[0].close;
-    candles.forEach((c, i) => {
-      const k = 2 / (period + 1);
-      avg = c.close * k + avg * (1 - k);
-      arr.push(avg);
-    });
-    return arr;
+    const has = strategy.indicators.find(i => i.id === "ema");
+    if (!has || !candles.length) return null;
+    const period = has.params?.period || 50;
+    const closes = candles.map(c => c.close);
+    const k = 2 / (period + 1); const out = []; let e = closes[0];
+    closes.forEach((v, idx) => { e = idx === 0 ? v : v * k + e * (1 - k); out.push(e); });
+    return out.slice(-50);
   }, [candles, strategy.indicators]);
 
-  // RSI overlay (mock)
   const rsi = useMemo(() => {
-    if (!strategy.indicators.find(i => i.id === "rsi")) return null;
-    return Array.from({ length: candles.length }, (_, i) => 30 + Math.sin(i * 0.4) * 25 + Math.cos(i * 0.21) * 12 + 50);
+    const has = strategy.indicators.find(i => i.id === "rsi");
+    if (!has || candles.length < 30 || typeof taRsi !== "function") return null;
+    const period = has.params?.period || 14;
+    const closes = candles.map(c => c.close);
+    const out = [];
+    for (let idx = candles.length - 50; idx < candles.length; idx++) out.push(taRsi(closes.slice(0, idx + 1), period));
+    return out;
   }, [candles, strategy.indicators]);
 
+  const s = bt ? bt.stats : null;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <div>
-        <div style={fieldLabel}>LIVE PREVIEW · {asset}</div>
-        <div style={{
-          background: "var(--bg-1)", border: "1px solid var(--line)", borderRadius: 4,
-          padding: 8,
-        }}>
-          <PreviewChart candles={candles} ema={ema} markers={markers} width={400} height={200} />
-          {rsi && (
+        <div style={fieldLabel}>LIVE PREVIEW · {asset} <span style={{ color: "var(--blue)", fontSize: 8.5 }}>● Bybit 15m</span></div>
+        <div style={{ background: "var(--bg-1)", border: "1px solid var(--line)", borderRadius: 4, padding: 8 }}>
+          {loading
+            ? <div style={{ height: 200, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: 11 }}>загрузка свечей Bybit…</div>
+            : <PreviewChart candles={chartCandles} ema={ema} markers={chartMarkers} width={400} height={200} />}
+          {rsi && !loading && (
             <div style={{ marginTop: 4 }}>
               <div style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--text-dim)", marginBottom: 2 }}>RSI {strategy.indicators.find(i => i.id === "rsi").params.period}</div>
               <PreviewRsi data={rsi} width={400} height={50} />
@@ -630,15 +676,17 @@ function StrategyPreview({ strategy, asset, step }) {
       </div>
 
       <div>
-        <div style={fieldLabel}>Симулированная производительность</div>
+        <div style={fieldLabel}>Бэктест на данных Bybit · 15m</div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 4 }}>
-          <PreviewStat label="ROI · 30д" v={`+${(8 + strategy.entry.length * 2.4 + strategy.indicators.length * 1.2).toFixed(1)}%`} c="var(--green)" />
-          <PreviewStat label="SHARPE" v={(1.0 + strategy.indicators.length * 0.18).toFixed(2)} c="var(--accent)" />
-          <PreviewStat label="WIN RATE" v={`${52 + strategy.indicators.length * 2}%`} c="var(--green)" />
-          <PreviewStat label="СДЕЛОК" v={markers.length * 6} c="var(--text-bright)" />
+          <PreviewStat label="ROI · бэктест" v={s ? `${s.roi >= 0 ? "+" : ""}${s.roi.toFixed(1)}%` : "…"} c={s && s.roi >= 0 ? "var(--green)" : "var(--red)"} />
+          <PreviewStat label="SHARPE" v={s ? s.sharpe.toFixed(2) : "…"} c="var(--accent)" />
+          <PreviewStat label="WIN RATE" v={s ? `${s.winRate.toFixed(0)}%` : "…"} c={s && s.winRate >= 50 ? "var(--green)" : "var(--amber)"} />
+          <PreviewStat label="СДЕЛОК" v={s ? s.trades : "…"} c="var(--text-bright)" />
         </div>
         <div className="mono" style={{ fontSize: 9.5, color: "var(--text-dim)", marginTop: 6 }}>
-          ≈ оценка на основе исторических данных за 30 дней
+          {s && s.trades === 0
+            ? "нет сделок по стратегии в окне · ослабьте confidence или сторону"
+            : `реальный прогон движка на ${candles.length} свечах Bybit`}
         </div>
       </div>
 
@@ -652,10 +700,10 @@ function StrategyPreview({ strategy, asset, step }) {
           color: "var(--text-mid)",
         }}>
           <div><span style={{ color: "var(--accent-2)" }}>WHEN</span> <span style={{ color: "var(--accent)" }}>{strategy.sources.join(" + ") || "..."}</span> updated</div>
-          <div><span style={{ color: "var(--accent-2)" }}>EVAL</span> {strategy.indicators.length || "..."} indicator(s)</div>
-          <div><span style={{ color: "var(--accent-2)" }}>IF</span> {strategy.entry.length || "..."} entry rule(s) {strategy.entry.length > 1 ? "(AND)" : ""} AND confidence ≥ {strategy.minConfidence || 75}%</div>
+          <div><span style={{ color: "var(--accent-2)" }}>EVAL</span> analyzeMarket · {strategy.indicators.length || "0"} indicator(s)</div>
+          <div><span style={{ color: "var(--accent-2)" }}>IF</span> setup AND confidence ≥ {strategy.minConfidence || 75}%</div>
           <div><span style={{ color: "var(--accent-2)" }}>THEN</span> open <span style={{ color: strategy.side === "sell" ? "var(--red)" : "var(--green)" }}>{(strategy.side || "buy").toUpperCase()}</span> position</div>
-          <div><span style={{ color: "var(--accent-2)" }}>EXIT</span> {EXIT_TYPES.find(e => e.id === strategy.exit?.type)?.ru || "..."}</div>
+          <div><span style={{ color: "var(--accent-2)" }}>EXIT</span> {EXIT_TYPES.find(e => e.id === strategy.exit?.type)?.ru || "..."}{strategy.exit?.type === "tp_sl" ? ` · TP ${strategy.exit.tp}% / SL ${strategy.exit.sl}%` : ""}</div>
         </div>
       </div>
     </div>
@@ -816,4 +864,4 @@ const glyphStyle = (on) => ({
   flexShrink: 0,
 });
 
-Object.assign(window, { StrategyStudio, STRATEGY_BUILTIN });
+Object.assign(window, { StrategyStudio });

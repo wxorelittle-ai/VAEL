@@ -47,12 +47,20 @@ function tmplNews(s) {
     .replace(/\{n\}/g, randInt(140, 982));
 }
 
-function makeNewsItem() {
-  const t = pick(NEWS_TEMPLATES);
+let __newsSeq = 0;
+function makeNewsItem(avoidTexts) {
+  let t, text, tries = 0;
+  do {
+    t = pick(NEWS_TEMPLATES);
+    text = tmplNews(t.txt);
+    tries++;
+  } while (avoidTexts && avoidTexts.has(text) && tries < 8);
+  // jitter kept small so it never crosses the item's own polarity/neutral band
+  const jitter = (Math.random() - 0.5) * 0.10;
   return {
-    id: Math.random().toString(36).slice(2, 10),
-    text: tmplNews(t.txt),
-    sent: t.sent + (Math.random() - 0.5) * 0.18,
+    id: `NW-${++__newsSeq}`,
+    text,
+    sent: Math.max(-1, Math.min(1, t.sent + jitter)),
     impact: t.impact,
     asset: t.asset,
     cat: t.cat,
@@ -111,9 +119,9 @@ function NewsTicker({ items, onOpen, sentimentIndex }) {
         fontFamily: "var(--font-mono)", fontSize: 10,
         flexShrink: 0,
       }}>
-        <span style={{ color: "var(--text-dim)" }}>SENT 1ч:</span>
+        <span style={{ color: "var(--text-dim)" }} title="Новостной тон + направление рынка BTC/ETH">СЕНТИМЕНТ:</span>
         <span style={{ color: sentColor, fontWeight: 600 }}>
-          {sentimentIndex >= 0 ? "+" : ""}{sentimentIndex.toFixed(2)}σ
+          {sentimentIndex >= 0 ? "+" : ""}{sentimentIndex.toFixed(2)}
         </span>
         <span style={{ width: 32, height: 4, background: "var(--bg-3)", borderRadius: 1, overflow: "hidden", position: "relative" }}>
           <span style={{
@@ -169,6 +177,7 @@ function TickerItem({ n, onClick }) {
       fontFamily: "var(--font-mono)", fontSize: 10.5,
       cursor: "pointer",
     }}>
+      {n.real && <span style={{ color: "var(--green)", fontSize: 8 }} title="реальное событие Bybit">●</span>}
       <span style={{ color: cat.color, fontWeight: 600, fontSize: 9, letterSpacing: 0.08 }}>[{cat.ru}]</span>
       <span style={{ color: sentColor, fontSize: 11 }}>{n.sent >= 0 ? "▲" : "▼"}{Math.abs(n.sent).toFixed(2)}</span>
       <span style={{ color: "var(--text)" }}>{n.text}</span>
@@ -330,7 +339,7 @@ function NewsCard({ n }) {
         }}>{n.impact}</span>
         <span className="chip mono" style={{ fontSize: 9 }}>{n.asset}</span>
         <span style={{ marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--text-dim)" }}>
-          {n.source.name} · {nowAge(n.ts)} назад
+          {n.real && <span style={{ color: "var(--green)" }}>● </span>}{n.source.name} · {nowAge(n.ts)} назад
         </span>
       </div>
       <div style={{ fontSize: 12.5, color: "var(--text)", lineHeight: 1.5, marginBottom: 6 }}>
@@ -374,32 +383,86 @@ if (typeof document !== "undefined" && !document.getElementById("__news_kf")) {
 }
 
 /* ─────────────────────────────────────────────────────────
+ * Real market-events — derived from live Bybit metrics (no news API needed).
+ * Returns the single most-notable current condition for a coin, or null.
+ * ────────────────────────────────────────────────────────*/
+const EVENT_SOURCE = { id: "bybit", name: "Bybit · data", tier: "live" };
+function makeMarketEvent(coin, m) {
+  if (!m) return null;
+  const chg = m.price24hPcnt;
+  const cands = [];
+  if (m.signalSetup) cands.push({ pr: 3, key: `sig-${m.signalSide}`, cat: "analysis", impact: "high",
+    sent: m.signalSide === "buy" ? 0.6 : -0.6,
+    text: `TA-движок: сетап ${m.signalSide === "buy" ? "ПОКУПКА" : "ПРОДАЖА"} ${coin} · confidence ${m.forecast}%` });
+  if (Math.abs(m.anomalyZ) > 2.2) cands.push({ pr: 2, key: "vol", cat: "onchain", impact: "med",
+    sent: chg != null && chg >= 0 ? 0.3 : -0.3,
+    text: `Всплеск объёма ${coin} · z=${m.anomalyZ.toFixed(1)}σ от среднего` });
+  if (chg != null && Math.abs(chg) >= 3) cands.push({ pr: 2, key: "chg", cat: "analysis",
+    impact: Math.abs(chg) >= 6 ? "high" : "med",
+    sent: Math.max(-1, Math.min(1, chg / 6)),
+    text: `${coin} ${chg >= 0 ? "вырос" : "упал"} на ${Math.abs(chg).toFixed(1)}% за 24ч` });
+  if (m.fundingRate != null && Math.abs(m.fundingRate) >= 0.0004) cands.push({ pr: 1, key: "fund", cat: "deriv", impact: "med",
+    sent: m.fundingRate > 0 ? -0.2 : 0.2,
+    text: `Funding ${coin} ${(m.fundingRate * 100).toFixed(4)}% · перекос ${m.fundingRate > 0 ? "в лонги" : "в шорты"}` });
+  if (!cands.length) return null;
+  cands.sort((a, b) => b.pr - a.pr);
+  return cands[0];
+}
+
+/* ─────────────────────────────────────────────────────────
  * NewsHost — owns state, ticker, drawer
  * ────────────────────────────────────────────────────────*/
 function NewsHost() {
+  const recentRef = useRef([]);
   const [items, setItems] = useState(() => {
-    return Array.from({ length: 20 }).map(() => {
-      const n = makeNewsItem();
-      // backdate
+    const out = [];
+    for (let i = 0; i < 20; i++) {
+      const n = makeNewsItem(new Set(out.slice(0, 8).map(x => x.text)));  // dedup within seed
       n.ts = new Date(Date.now() - Math.random() * 1000 * 60 * 60 * 12);
       n.isNew = false;
-      return n;
-    }).sort((a, b) => b.ts - a.ts);
+      out.push(n);
+    }
+    out.sort((a, b) => b.ts - a.ts);
+    recentRef.current = out.slice(0, 8).map(n => n.text);
+    return out;
   });
   const [drawerOpen, setDrawerOpen] = useState(false);
 
-  // Add new news every 8-15s
+  // real market direction (BTC+ETH 24h %) blended into the sentiment index
+  const { prices } = useBybitTickers(["BTCUSDT", "ETHUSDT"], 15000);
+
+  // real market-event injection from live Bybit metrics (signals, volume spikes, big moves, funding)
+  const eventCdRef = useRef({});
+  const mBtc = typeof useMarketMetrics === "function" ? useMarketMetrics("BTCUSDT", 15000) : null;
+  const mEth = typeof useMarketMetrics === "function" ? useMarketMetrics("ETHUSDT", 15000) : null;
+  useEffect(() => {
+    const now = Date.now();
+    [["BTC", mBtc], ["ETH", mEth]].forEach(([coin, m]) => {
+      const ev = makeMarketEvent(coin, m);
+      if (!ev) return;
+      const ck = `${coin}-${ev.key}`;
+      if (now - (eventCdRef.current[ck] || 0) < 120000) return; // 2-min cooldown per event type
+      eventCdRef.current[ck] = now;
+      const item = {
+        id: `NW-${++__newsSeq}`, text: ev.text, sent: ev.sent, impact: ev.impact,
+        asset: coin, cat: ev.cat, source: EVENT_SOURCE, real: true, ts: new Date(), isNew: true,
+      };
+      setItems(prev => [item, ...prev.map(n => (n.isNew ? { ...n, isNew: false } : n))].slice(0, 40));
+    });
+  }, [mBtc, mEth]);
+
+  // Add new news every 8-15s (deduped vs recent, old items lose their "new" flag)
   useEffect(() => {
     const tick = () => {
-      const next = makeNewsItem();
-      setItems(prev => [next, ...prev].slice(0, 40));
-      // toast if crit
+      const next = makeNewsItem(new Set(recentRef.current));
+      recentRef.current = [next.text, ...recentRef.current].slice(0, 8);
+      setItems(prev => [next, ...prev.map(n => (n.isNew ? { ...n, isNew: false } : n))].slice(0, 40));
       if (next.impact === "crit") {
         window.__emitToast?.({
           kind: "crit",
           title: `КРИТИЧЕСКАЯ НОВОСТЬ · ${next.asset}`,
           body: next.text,
-          meta: `${next.source.name} · sentiment ${next.sent >= 0 ? "+" : ""}${next.sent.toFixed(2)}σ`,
+          meta: `${next.source.name} · sentiment ${next.sent >= 0 ? "+" : ""}${next.sent.toFixed(2)}`,
           duration: 8000,
         });
       }
@@ -411,16 +474,24 @@ function NewsHost() {
     return () => clearTimeout(id);
   }, []);
 
-  // Expose opener
   useEffect(() => {
     window.__openNewsDrawer = () => setDrawerOpen(true);
   }, []);
 
-  const sentimentIndex = useMemo(() => {
+  const newsMean = useMemo(() => {
     const recent = items.slice(0, 10);
-    if (recent.length === 0) return 0;
+    if (!recent.length) return 0;
     return recent.reduce((s, n) => s + n.sent, 0) / recent.length;
   }, [items]);
+
+  const marketSent = useMemo(() => {
+    const vals = ["BTCUSDT", "ETHUSDT"].map(s => (prices[s] ? prices[s].price24hPcnt * 100 : null)).filter(v => v != null);
+    if (!vals.length) return null;
+    return Math.max(-1, Math.min(1, Math.tanh((vals.reduce((s, v) => s + v, 0) / vals.length) / 3)));
+  }, [prices]);
+
+  // honest composite: news tone + real market direction
+  const sentimentIndex = marketSent != null ? newsMean * 0.6 + marketSent * 0.4 : newsMean;
 
   return (
     <>

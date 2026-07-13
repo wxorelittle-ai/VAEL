@@ -39,18 +39,23 @@ const TIERS = {
   PRO:   { color: "var(--blue)",   text: "PRO" },
 };
 
-function makeTrade() {
+const SM_FALLBACK_PRICE = { BTC: 64000, ETH: 1820, SOL: 77, AVAX: 6.5, ARB: 0.5, LINK: 8, OP: 0.9, WIF: 1.2 };
+let __smTradeSeq = 0;
+
+function makeTrade(priceMap) {
   const w = pick(SMART_WALLETS);
   const sym = pick(["ETH", "BTC", "SOL", "AVAX", "ARB", "LINK", "OP", "WIF"]);
   const side = Math.random() > 0.5 ? "buy" : "sell";
+  const live = priceMap && priceMap[sym + "USDT"];
+  const base = live ? live.lastPrice : (SM_FALLBACK_PRICE[sym] || 1);
   return {
-    id: Math.random().toString(36).slice(2, 8),
+    id: `SMT-${++__smTradeSeq}`,
     walletId: w.id,
     walletAlias: w.alias,
     walletColor: w.color,
     sym, side,
     size: Math.floor(Math.random() * 2400 + 80),
-    price: sym === "BTC" ? 64280 + (Math.random() - 0.5) * 400 : sym === "ETH" ? 2412 + (Math.random() - 0.5) * 40 : sym === "SOL" ? 142 + (Math.random() - 0.5) * 4 : Math.random() * 100 + 0.5,
+    price: base * (1 + (Math.random() - 0.5) * 0.0012), // real Bybit price ± tiny jitter
     ts: nowTsHM(),
     isNew: true,
   };
@@ -59,11 +64,15 @@ function makeTrade() {
 function SmartMoneyPage({ lang }) {
   const [selected, setSelected] = useState(SMART_WALLETS[0].id);
   const [followed, setFollowed] = useState(new Set(["SM-001", "SM-006"]));
-  const [feed, setFeed] = useState(() => Array.from({ length: 14 }, () => ({ ...makeTrade(), isNew: false })));
+  // real Bybit prices so the copy-trade feed quotes the same numbers as the rest of the app
+  const { prices } = useBybitTickers(["BTCUSDT", "ETHUSDT", "SOLUSDT", "AVAXUSDT", "ARBUSDT", "LINKUSDT", "OPUSDT", "WIFUSDT"], 8000);
+  const pricesRef = useRef(prices);
+  pricesRef.current = prices;
+  const [feed, setFeed] = useState(() => Array.from({ length: 14 }, () => ({ ...makeTrade(pricesRef.current), isNew: false })));
   const [sortBy, setSortBy] = useState("perf30d");
 
   useInterval(() => {
-    setFeed(prev => [{ ...makeTrade() }, ...prev.map(t => ({ ...t, isNew: false }))].slice(0, 24));
+    setFeed(prev => [{ ...makeTrade(pricesRef.current) }, ...prev.map(t => ({ ...t, isNew: false }))].slice(0, 24));
   }, 4500);
 
   const sel = SMART_WALLETS.find(w => w.id === selected);
@@ -188,7 +197,13 @@ function SmRow({ w, rank, selected, followed, onSelect, onToggleFollow }) {
 }
 
 function SmDetail({ w, followed, onToggleFollow }) {
-  const perfCurve = useMemo(() => genSpark(100, 0.12, 30), [w.id]);
+  // curve that actually trends toward this wallet's 30d performance
+  const perfCurve = useMemo(() => {
+    const len = 30, drift = (w.perf30d / 100) / len;
+    const out = []; let cur = 100;
+    for (let i = 0; i < len; i++) { cur = cur * (1 + drift + (Math.random() - 0.5) * 0.02); out.push(cur); }
+    return out;
+  }, [w.id]);
   return (
     <div className="scroll" style={{ flex: 1, overflowY: "auto" }}>
       <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--line)", background: "var(--bg-2)", display: "flex", alignItems: "center", gap: 12 }}>

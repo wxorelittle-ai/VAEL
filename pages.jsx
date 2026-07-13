@@ -641,17 +641,19 @@ function Stat({ label, v, c }) {
  *  WATCHLIST PAGE
  * ════════════════════════════════════════════════════════*/
 
+/* ETH entries carry a real public address (`eth`) so a set ETHERSCAN_API_KEY
+ * fetches genuine on-chain balance/txs; non-ETH nets stay simulated. */
 const WATCH_DATA = [
-  { addr: "0x7a2c...ef91", name: "Whale-04",          net: "ETH",  last: "2m ago",  risk: 24, flow: "+128.4 ETH",  status: "track" },
-  { addr: "0xdead...beef", name: "Suspect · mixer",   net: "ETH",  last: "now",     risk: 92, flow: "−4 200 USDT", status: "flag" },
+  { addr: "0x7a2c...ef91", name: "Whale-04",          net: "ETH",  eth: "0xF977814e90dA44bFA03b6295A0616a897441aceC", last: "2m ago",  risk: 24, flow: "+128.4 ETH",  status: "track" },
+  { addr: "0xdead...beef", name: "Suspect · mixer",   net: "ETH",  eth: "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045", last: "now",     risk: 92, flow: "−4 200 USDT", status: "flag" },
   { addr: "TKf3W...P9aR",  name: "CEX hot wallet",    net: "TRON", last: "8m ago",  risk: 12, flow: "+1.2M USDT",  status: "track" },
-  { addr: "0xab12...0042", name: "Fund · alpha",      net: "ETH",  last: "1h ago",  risk: 35, flow: "−812 ETH",    status: "track" },
+  { addr: "0xab12...0042", name: "Fund · alpha",      net: "ETH",  eth: "0x2910543Af39abA0Cd09dBb2D50200b3E800A63D2", last: "1h ago",  risk: 35, flow: "−812 ETH",    status: "track" },
   { addr: "5Hd9...Kpw2",   name: "Validator-A",       net: "DOT",  last: "12m ago", risk: 8,  flow: "+0",          status: "track" },
   { addr: "bc1q...l8mk",   name: "Cold storage",      net: "BTC",  last: "2d ago",  risk: 4,  flow: "+0",          status: "track" },
-  { addr: "0x91a4...4f02", name: "Unknown · cluster", net: "ETH",  last: "now",     risk: 67, flow: "+248 ETH",    status: "watch" },
-  { addr: "0xcc88...b001", name: "Bridge · L2",       net: "ETH",  last: "4m ago",  risk: 18, flow: "+8.4M USDC",  status: "track" },
+  { addr: "0x91a4...4f02", name: "Unknown · cluster", net: "ETH",  eth: "0x28C6c06298d514Db089934071355E5743bf21d60", last: "now",     risk: 67, flow: "+248 ETH",    status: "watch" },
+  { addr: "0xcc88...b001", name: "Bridge · L2",       net: "ETH",  eth: "0x21a31Ee1afC51d94C2eFcCAa2092aD1028285549", last: "4m ago",  risk: 18, flow: "+8.4M USDC",  status: "track" },
   { addr: "TKL2...M3kp",   name: "Suspect · phishing",net: "TRON", last: "15m ago", risk: 88, flow: "+12 800 USDT",status: "flag" },
-  { addr: "0xfe44...aa01", name: "Treasury · proto",  net: "ETH",  last: "1d ago",  risk: 6,  flow: "+0",          status: "track" },
+  { addr: "0xfe44...aa01", name: "Treasury · proto",  net: "ETH",  eth: "0xDFd5293D8e347dFe59E90eFd55b2956a1343963d", last: "1d ago",  risk: 6,  flow: "+0",          status: "track" },
 ];
 
 function WatchlistPage({ lang }) {
@@ -682,7 +684,7 @@ function WatchlistPage({ lang }) {
             <span>АДРЕС</span><span>НАЗВАНИЕ</span><span>СЕТЬ</span><span>АКТИВНОСТЬ</span><span>RISK</span><span>NET FLOW</span><span>СТАТУС</span>
           </div>
           <div className="scroll" style={{ flex: 1 }}>
-            {WATCH_DATA.map((w, i) => <WatchRow key={i} w={w} onClick={() => setSelected(w)} />)}
+            {WATCH_DATA.map((w) => <WatchRow key={w.addr} w={w} onClick={() => setSelected(w)} />)}
           </div>
         </div>
       </div>
@@ -863,6 +865,80 @@ function ReportsPage({ lang }) {
 /* ═════════════════════════════════════════════════════════
  *  SETTINGS PAGE
  * ════════════════════════════════════════════════════════*/
+/* ── API keys: persisted in this browser's localStorage (client-side only) ── */
+const API_KEYS_LS = "vael.apiKeys";
+const API_KEY_DEFS = [
+  { name: "COINGECKO_API_KEY",  hint: "рыночные данные · read-only",        safe: true },
+  { name: "ETHERSCAN_API_KEY",  hint: "on-chain данные кошельков · read-only", safe: true },
+  { name: "CRYPTOPANIC_API_KEY",hint: "новостной поток · read-only",        safe: true },
+  { name: "ANTHROPIC_API_KEY",  hint: "LLM для ассистента · секрет",        safe: false },
+  { name: "BYBIT_API_KEY",      hint: "приватный API Bybit · нужен бэкенд",  safe: false },
+  { name: "BYBIT_API_SECRET",   hint: "секрет Bybit · НЕ храните в браузере", safe: false },
+  { name: "TELEGRAM_BOT_TOKEN", hint: "бот для алертов · секрет",           safe: false },
+];
+function loadApiKeys() { try { return JSON.parse(localStorage.getItem(API_KEYS_LS) || "{}"); } catch (_) { return {}; } }
+function saveApiKeys(obj) { try { localStorage.setItem(API_KEYS_LS, JSON.stringify(obj)); } catch (_) {} window.__apiKeys = obj; }
+function getApiKey(name) { const k = loadApiKeys(); return (k && k[name]) || ""; }
+window.__apiKeys = loadApiKeys();
+Object.assign(window, { getApiKey, loadApiKeys });
+
+function ApiKeyRow({ def, value, show, onChange, onToggle }) {
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "230px 1fr auto", gap: 8, padding: "6px 14px", borderBottom: "1px solid var(--line)", alignItems: "center" }}>
+      <div style={{ display: "flex", flexDirection: "column" }}>
+        <span className="mono" style={{ fontSize: 11, color: "var(--text-mid)", display: "flex", alignItems: "center", gap: 5 }}>
+          {def.name}{!def.safe && <span style={{ color: "var(--amber)" }} title="секретный ключ — виден на клиенте в браузерной сборке">⚠</span>}
+        </span>
+        <span style={{ fontSize: 9, color: "var(--text-dim)" }}>{def.hint}</span>
+      </div>
+      <input type={show ? "text" : "password"} value={value}
+        onChange={e => onChange(e.target.value)} placeholder="не задан"
+        spellCheck={false} autoComplete="off"
+        style={{ background: "var(--bg-0)", border: "1px solid var(--line)", color: "var(--text-bright)", fontFamily: "var(--font-mono)", fontSize: 11, padding: "5px 8px", borderRadius: 3, outline: "none", width: "100%" }} />
+      <button onClick={onToggle} title={show ? "скрыть" : "показать"} style={{
+        background: "var(--bg-2)", border: "1px solid var(--line)", color: "var(--text-dim)",
+        borderRadius: 3, cursor: "pointer", fontFamily: "var(--font-mono)", fontSize: 12, padding: "3px 9px",
+      }}>{show ? "◉" : "○"}</button>
+    </div>
+  );
+}
+
+function ApiKeysCard() {
+  const [keys, setKeys] = useState(() => loadApiKeys());
+  const [revealed, setRevealed] = useState({});
+  const [dirty, setDirty] = useState(false);
+  const setCount = API_KEY_DEFS.filter(d => (keys[d.name] || "").trim()).length;
+
+  function set(name, val) { setKeys(prev => ({ ...prev, [name]: val })); setDirty(true); }
+  function save() {
+    const cleaned = {};
+    Object.keys(keys).forEach(k => { if ((keys[k] || "").trim()) cleaned[k] = keys[k].trim(); });
+    saveApiKeys(cleaned);
+    setKeys(cleaned);
+    setDirty(false);
+    window.__emitToast?.({ kind: "win", title: "API-ключи сохранены", body: "Хранятся локально в этом браузере (localStorage), на сервер не отправляются." });
+  }
+
+  return (
+    <div className="panel" style={{ gridColumn: "1 / -1", display: "flex", flexDirection: "column" }}>
+      <PanelHeader title="API-КЛЮЧИ" meta={`${setCount}/${API_KEY_DEFS.length} заданы · localStorage`}
+        action={<button className="btn btn-accent" onClick={save} disabled={!dirty}
+          style={{ padding: "1px 10px", fontSize: 10, opacity: dirty ? 1 : 0.5 }}>{dirty ? "Сохранить" : "Сохранено"}</button>} />
+      <div style={{ padding: "4px 0" }}>
+        {API_KEY_DEFS.map(def => (
+          <ApiKeyRow key={def.name} def={def} value={keys[def.name] || ""} show={!!revealed[def.name]}
+            onChange={v => set(def.name, v)}
+            onToggle={() => setRevealed(r => ({ ...r, [def.name]: !r[def.name] }))} />
+        ))}
+      </div>
+      <div style={{ padding: "9px 14px", borderTop: "1px solid var(--line)", fontSize: 10.5, color: "var(--text-dim)", lineHeight: 1.55, display: "flex", gap: 8 }}>
+        <span style={{ color: "var(--amber)", flexShrink: 0 }}>⚠</span>
+        <span>Ключи хранятся только в этом браузере и не уходят на сервер. <b style={{ color: "var(--green)" }}>Безопасно</b> держать read-only ключи (CoinGecko, Etherscan, CryptoPanic). <b style={{ color: "var(--amber)" }}>Секретные/торговые</b> (Bybit secret, Anthropic, Telegram) в браузерной сборке видны на клиенте — для них нужен серверный прокси.</span>
+      </div>
+    </div>
+  );
+}
+
 function SettingsPage({ lang }) {
   return (
     <div data-screen-label="09 Settings" style={{ height: "100%", padding: "var(--gap)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
@@ -871,13 +947,7 @@ function SettingsPage({ lang }) {
         actions={<><button className="btn">Reset</button><button className="btn btn-accent">Сохранить</button></>}
       />
       <div className="scroll" style={{ flex: 1, display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--gap)", overflow: "auto", paddingRight: 4, minHeight: 0 }}>
-        <SettingsCard title="API KEYS">
-          <KvRow k="OPENAI_API_KEY" v="sk-•••••••••••••••••••••••a7Q1" status="ok" />
-          <KvRow k="ANTHROPIC_API_KEY" v="sk-•••••••••••••••••••••••42pf" status="ok" />
-          <KvRow k="COINGECKO_API_KEY" v="CG-•••••••••••••42KP" status="ok" />
-          <KvRow k="ETHERSCAN_API_KEY" v="•••••••••••••••B92K" status="ok" />
-          <KvRow k="TELEGRAM_BOT_TOKEN" v="•••••••••••••44Yx" status="warn" />
-        </SettingsCard>
+        <ApiKeysCard />
         <SettingsCard title="МОДЕЛИ">
           <KvRow k="planner.model"  v="gpt-4o (chain-of-thought)" status="ok" />
           <KvRow k="critic.model"   v="claude-3.5-sonnet" status="ok" />

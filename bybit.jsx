@@ -424,9 +424,39 @@ function useBybitLongShort(symbol, ms = 60000) {
   return ls;
 }
 
+/* ─────────────────────────────────────────────────────────
+ * useMarketMetrics — REST-poll candles + derivatives → real analytics metrics
+ * (volatility, volume anomaly, sentiment, flow, risk, AI forecast)
+ * ────────────────────────────────────────────────────────*/
+function useMarketMetrics(symbol, ms = 12000) {
+  const [metrics, setMetrics] = useState(null);
+  useEffect(() => {
+    if (typeof computeMarketMetrics !== "function") return;
+    let cancelled = false, id = null;
+    setMetrics(null);
+    async function load() {
+      try {
+        const [kl, tk, lin, ls] = await Promise.all([
+          bybitFetchKlines(symbol, "15", 100),
+          bybitFetchTicker(symbol).catch(() => null),
+          bybitFetchLinearStats(symbol).catch(() => null),
+          bybitFetchLongShort(symbol).catch(() => null),
+        ]);
+        if (cancelled || !kl || !kl.length) return;
+        setMetrics(computeMarketMetrics(kl, { ticker: tk, linear: lin, longShort: ls }));
+      } catch (_) {}
+    }
+    load();
+    id = setInterval(load, ms);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [symbol, ms]);
+  return metrics;
+}
+
 Object.assign(window, {
   toBybitSymbol, bybitFetchKlines, bybitFetchTicker, useBybitMarket, useBybitTickers,
   bybitFetchOrderbook, bybitFetchRecentTrades, useBybitOrderbook, useBybitTrades, useBybitL2,
   bybitFetchLinearStats, useBybitLinearStats, bybitFetchLongShort, useBybitLongShort,
+  useMarketMetrics,
   BYBIT_REST, BYBIT_WS_SPOT,
 });

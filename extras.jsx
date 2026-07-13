@@ -445,206 +445,6 @@ function Segmented({ value, onChange, options }) {
  *  CANDLESTICK CHART
  * ════════════════════════════════════════════════════════*/
 
-function genCandles(n = 60, base = 2400, vol = 0.02) {
-  const out = [];
-  let prev = base;
-  for (let i = 0; i < n; i++) {
-    const open = prev;
-    const drift = (Math.random() - 0.48) * base * vol;
-    const close = open + drift;
-    const hi = Math.max(open, close) + Math.random() * base * vol * 0.6;
-    const lo = Math.min(open, close) - Math.random() * base * vol * 0.6;
-    out.push({ open, close, hi, lo, v: Math.random() * 100 + 20 });
-    prev = close;
-  }
-  return out;
-}
-
-function CandlestickChart({ candles, width = 600, height = 260 }) {
-  const minV = Math.min(...candles.map(c => c.lo));
-  const maxV = Math.max(...candles.map(c => c.hi));
-  const range = maxV - minV || 1;
-  const padY = 18;
-  const chartH = height - 40; // leave room for vol bars
-  const volH = 30;
-  const stepX = width / candles.length;
-  const candleW = Math.max(2, stepX * 0.6);
-  const maxVol = Math.max(...candles.map(c => c.v));
-
-  const y = (v) => padY + (1 - (v - minV) / range) * (chartH - padY * 2);
-
-  return (
-    <svg width={width} height={height} style={{ display: "block" }}>
-      {/* y grid */}
-      {[0.2, 0.4, 0.6, 0.8].map((p, i) => (
-        <g key={i}>
-          <line x1={0} y1={padY + (chartH - padY * 2) * p} x2={width}
-            y2={padY + (chartH - padY * 2) * p}
-            stroke="var(--line)" strokeWidth={0.5} strokeDasharray="2 4" />
-          <text x={width - 4} y={padY + (chartH - padY * 2) * p - 2} textAnchor="end"
-            fontFamily="var(--font-mono)" fontSize={9} fill="var(--text-dim)">
-            {(maxV - range * p).toFixed(0)}
-          </text>
-        </g>
-      ))}
-      {/* candles */}
-      {candles.map((c, i) => {
-        const cx = i * stepX + stepX / 2;
-        const up = c.close >= c.open;
-        const color = up ? "var(--green)" : "var(--red)";
-        const top = y(Math.max(c.open, c.close));
-        const bot = y(Math.min(c.open, c.close));
-        return (
-          <g key={i}>
-            <line x1={cx} y1={y(c.hi)} x2={cx} y2={y(c.lo)} stroke={color} strokeWidth={1} />
-            <rect x={cx - candleW / 2} y={top} width={candleW} height={Math.max(1, bot - top)}
-              fill={up ? "transparent" : color} stroke={color} strokeWidth={1} />
-            {/* volume bar */}
-            <rect x={cx - candleW / 2} y={height - 8 - (c.v / maxVol) * volH}
-              width={candleW} height={(c.v / maxVol) * volH}
-              fill={color} opacity={0.35} />
-          </g>
-        );
-      })}
-      {/* current price line */}
-      <line x1={0} y1={y(candles[candles.length - 1].close)} x2={width}
-        y2={y(candles[candles.length - 1].close)}
-        stroke="var(--accent)" strokeWidth={0.6} strokeDasharray="3 3" opacity={0.6} />
-    </svg>
-  );
-}
-
-/* ═════════════════════════════════════════════════════════
- *  ORDER BOOK LADDER
- * ════════════════════════════════════════════════════════*/
-
-function OrderBook({ mid = 2408.42, lang }) {
-  const rows = 11;
-  const asks = useMemo(() => {
-    return Array.from({ length: rows }, (_, i) => {
-      const price = mid + (i + 1) * 0.42;
-      const size = Math.random() * 18 + 0.5;
-      return { price, size };
-    }).reverse();
-  }, [mid]);
-  const bids = useMemo(() => {
-    return Array.from({ length: rows }, (_, i) => {
-      const price = mid - (i + 1) * 0.42;
-      const size = Math.random() * 18 + 0.5;
-      return { price, size };
-    });
-  }, [mid]);
-
-  const maxSize = Math.max(...asks.map(a => a.size), ...bids.map(b => b.size));
-
-  return (
-    <div style={{ fontFamily: "var(--font-mono)", fontSize: 10.5 }}>
-      <div style={{
-        display: "grid", gridTemplateColumns: "1fr 1fr 1fr",
-        padding: "6px 10px",
-        color: "var(--text-dim)", fontSize: 9, letterSpacing: 0.08,
-        textTransform: "uppercase", borderBottom: "1px solid var(--line)",
-        background: "var(--bg-2)",
-      }}>
-        <span>{lang === "en" ? "Price" : "Цена"}</span>
-        <span style={{ textAlign: "right" }}>{lang === "en" ? "Size" : "Объём"}</span>
-        <span style={{ textAlign: "right" }}>Σ</span>
-      </div>
-      {asks.map((a, i) => {
-        const sum = asks.slice(i).reduce((s, x) => s + x.size, 0);
-        return <OBRow key={`a${i}`} side="ask" price={a.price} size={a.size} sum={sum} maxSize={maxSize * 4} />;
-      })}
-      <div style={{
-        padding: "5px 10px",
-        background: "var(--bg-0)",
-        borderTop: "1px solid var(--accent)",
-        borderBottom: "1px solid var(--accent)",
-        display: "flex", alignItems: "center", justifyContent: "space-between",
-      }}>
-        <span style={{ color: "var(--accent)", fontWeight: 600, fontSize: 12 }}>
-          {mid.toFixed(2)} <span style={{ fontSize: 9, color: "var(--text-dim)" }}>USD</span>
-        </span>
-        <span style={{ color: "var(--green)", fontSize: 9.5 }}>SPREAD 0.08 (0.003%)</span>
-      </div>
-      {bids.map((b, i) => {
-        const sum = bids.slice(0, i + 1).reduce((s, x) => s + x.size, 0);
-        return <OBRow key={`b${i}`} side="bid" price={b.price} size={b.size} sum={sum} maxSize={maxSize * 4} />;
-      })}
-    </div>
-  );
-}
-
-function OBRow({ side, price, size, sum, maxSize }) {
-  const color = side === "ask" ? "var(--red)" : "var(--green)";
-  const pct = (size / maxSize) * 100;
-  return (
-    <div style={{
-      display: "grid", gridTemplateColumns: "1fr 1fr 1fr",
-      padding: "2.5px 10px",
-      position: "relative", alignItems: "center",
-      borderBottom: "1px solid var(--bg-2)",
-    }}>
-      <div style={{
-        position: "absolute", top: 0, bottom: 0,
-        right: 0, width: `${pct}%`,
-        background: color, opacity: 0.08,
-      }} />
-      <span style={{ position: "relative", color, fontVariantNumeric: "tabular-nums" }}>{price.toFixed(2)}</span>
-      <span style={{ position: "relative", textAlign: "right", color: "var(--text)" }}>{size.toFixed(2)}</span>
-      <span style={{ position: "relative", textAlign: "right", color: "var(--text-dim)" }}>{sum.toFixed(1)}</span>
-    </div>
-  );
-}
-
-/* ═════════════════════════════════════════════════════════
- *  FLOW HEATMAP (token movement)
- * ════════════════════════════════════════════════════════*/
-
-function FlowHeatmap({ width = 380, height = 160 }) {
-  const cols = 24; // hours
-  const rows = 8;  // chain / segment
-  const labels = ["ETH", "USDT", "USDC", "WBTC", "DAI", "L2-A", "L2-B", "BNB"];
-  const cells = useMemo(() => {
-    return Array.from({ length: rows }, (_, r) =>
-      Array.from({ length: cols }, (_, c) => {
-        const v = Math.sin((r * 3 + c * 0.7)) * 0.5 + 0.5;
-        return v * (0.4 + Math.random() * 0.6);
-      })
-    );
-  }, []);
-  const cellW = (width - 50) / cols;
-  const cellH = (height - 24) / rows;
-
-  return (
-    <svg width={width} height={height}>
-      {cells.map((row, r) => (
-        <g key={r}>
-          <text x={4} y={28 + r * cellH + cellH / 2 + 3}
-            fontFamily="var(--font-mono)" fontSize={9} fill="var(--text-dim)">{labels[r]}</text>
-          {row.map((v, c) => {
-            const color = v > 0.7 ? "var(--green)" : v > 0.4 ? "var(--accent)" : "var(--blue)";
-            return (
-              <rect key={c}
-                x={48 + c * cellW} y={24 + r * cellH}
-                width={cellW - 1} height={cellH - 1}
-                fill={color} opacity={0.15 + v * 0.65}
-              />
-            );
-          })}
-        </g>
-      ))}
-      {/* x labels */}
-      {[0, 6, 12, 18, 23].map(h => (
-        <text key={h} x={48 + h * cellW + cellW / 2} y={18}
-          textAnchor="middle"
-          fontFamily="var(--font-mono)" fontSize={9} fill="var(--text-dim)">
-          {String(h).padStart(2, "0")}:00
-        </text>
-      ))}
-    </svg>
-  );
-}
-
 /* ═════════════════════════════════════════════════════════
  *  ENHANCED ANALYTICS PAGE
  * ════════════════════════════════════════════════════════*/
@@ -654,8 +454,9 @@ function AnalyticsPageEnhanced({ lang }) {
   // real Bybit market: 1H candles + live orderbook/trades
   const { candles, ticker, status } = useBybitMarket(SYMBOL, "60", 60);
   const { orderbook, trades } = useBybitL2(SYMBOL, 50, 20);
-  const sentimentData = useMemo(() => genSpark(0.5, 0.18, 60), []);
-  const anomalyData = useMemo(() => genSpark(12, 0.4, 40), []);
+  const metrics = typeof useMarketMetrics === "function" ? useMarketMetrics(SYMBOL, 12000) : null;
+  const anomalyData = metrics && metrics.anomalySeries.length > 1 ? metrics.anomalySeries : [0, 0];
+  const sentimentData = metrics && metrics.closeSeries.length > 1 ? metrics.closeSeries : [0, 0];
 
   if (!candles.length) {
     return (
@@ -731,9 +532,9 @@ function AnalyticsPageEnhanced({ lang }) {
               <Stat label="HIGH · 24h" v={high.toFixed(1)} c="var(--green)" />
               <Stat label="LOW · 24h" v={low.toFixed(1)} c="var(--red)" />
               <Stat label="ОБОРОТ · 24h" v={typeof fmtMktUsd === "function" ? fmtMktUsd(turnover) : `$${(turnover/1e9).toFixed(2)}B`} />
-              <Stat label="VWAP" v={(first.open * 0.4 + last.close * 0.6).toFixed(1)} />
-              <Stat label="VOLATILITY" v="2.4σ" c="var(--amber)" />
-              <Stat label="AI CONF" v="87%" c="var(--accent)" />
+              <Stat label="VWAP" v={metrics ? metrics.vwap.toFixed(1) : (first.open * 0.4 + last.close * 0.6).toFixed(1)} />
+              <Stat label="VOLATILITY" v={metrics ? `${metrics.atrPct.toFixed(2)}%` : "…"} c="var(--amber)" />
+              <Stat label="AI CONF" v={metrics ? `${metrics.forecast}%` : "…"} c="var(--accent)" />
             </div>
           </div>
         </div>
@@ -759,7 +560,9 @@ function AnalyticsPageEnhanced({ lang }) {
 
         {/* Sentiment */}
         <div className="panel" style={{ display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
-          <PanelHeader title="SENTIMENT · ROLLING 24h" meta="news + social + agent" />
+          <PanelHeader title="SENTIMENT · ПОЗИЦИОНИРОВАНИЕ" meta={metrics && metrics.buyRatio != null
+            ? `L/S ${(metrics.buyRatio * 100).toFixed(0)}/${((1 - metrics.buyRatio) * 100).toFixed(0)} · funding ${(metrics.fundingRate * 100).toFixed(4)}%`
+            : "Bybit derivatives"} />
           <div style={{ padding: 10, flex: 1, position: "relative", minHeight: 0 }}>
             <svg width="100%" height="100%" viewBox="0 0 400 160" preserveAspectRatio="none">
               <AreaChartInner data={sentimentData} width={400} height={160} color="var(--accent-2)" />
@@ -778,7 +581,7 @@ function AnalyticsPageEnhanced({ lang }) {
 
         {/* Anomaly */}
         <div className="panel" style={{ display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
-          <PanelHeader title={lang === "en" ? "ANOMALY DETECTION" : "ДЕТЕКТОР АНОМАЛИЙ"} meta="6 detected · last 1h" />
+          <PanelHeader title={lang === "en" ? "ANOMALY DETECTION" : "ДЕТЕКТОР АНОМАЛИЙ"} meta={`${metrics ? metrics.anomalyCount : 0} аномалий · z-score объёма`} />
           <div style={{ padding: 10, flex: 1, position: "relative", minHeight: 0 }}>
             <svg width="100%" height="100%" viewBox="0 0 400 160" preserveAspectRatio="none">
               <AreaChartInner data={anomalyData} width={400} height={160} color="var(--red)" />
@@ -872,98 +675,8 @@ function AreaChartInner({ data, width, height, color }) {
   );
 }
 
-function FlowHeatmapInner({ width, height }) {
-  const cols = 24, rows = 8;
-  const labels = ["ETH", "USDT", "USDC", "WBTC", "DAI", "L2-A", "L2-B", "BNB"];
-  const cells = useMemo(() => {
-    return Array.from({ length: rows }, (_, r) =>
-      Array.from({ length: cols }, (_, c) => {
-        const v = Math.sin((r * 3 + c * 0.7)) * 0.5 + 0.5;
-        return v * (0.4 + Math.random() * 0.6);
-      })
-    );
-  }, []);
-  const cellW = (width - 50) / cols;
-  const cellH = (height - 24) / rows;
-  return (
-    <>
-      {cells.map((row, r) => (
-        <g key={r}>
-          <text x={4} y={28 + r * cellH + cellH / 2 + 3}
-            fontFamily="var(--font-mono)" fontSize={9} fill="var(--text-dim)">{labels[r]}</text>
-          {row.map((v, c) => {
-            const color = v > 0.7 ? "var(--green)" : v > 0.4 ? "var(--accent)" : "var(--blue)";
-            return (
-              <rect key={c}
-                x={48 + c * cellW} y={24 + r * cellH}
-                width={cellW - 1} height={cellH - 1}
-                fill={color} opacity={0.15 + v * 0.65}
-              />
-            );
-          })}
-        </g>
-      ))}
-      {[0, 6, 12, 18, 23].map(h => (
-        <text key={h} x={48 + h * cellW + cellW / 2} y={18}
-          textAnchor="middle"
-          fontFamily="var(--font-mono)" fontSize={9} fill="var(--text-dim)">
-          {String(h).padStart(2, "0")}:00
-        </text>
-      ))}
-    </>
-  );
-}
-
-/* ─────────────────────────────────────────────────────────
- * Live trades feed
- * ────────────────────────────────────────────────────────*/
-function LiveTrades({ mid }) {
-  const [trades, setTrades] = useState(() => {
-    return Array.from({ length: 11 }).map(() => makeTrade(mid));
-  });
-  useInterval(() => {
-    setTrades(prev => [makeTrade(mid), ...prev.slice(0, 10)]);
-  }, 1200);
-  return (
-    <div className="scroll" style={{ flex: 1, overflow: "auto", fontFamily: "var(--font-mono)", fontSize: 10.5 }}>
-      <div style={{
-        display: "grid", gridTemplateColumns: "auto 1fr 1fr 1fr",
-        gap: 6, padding: "6px 12px", borderBottom: "1px solid var(--line)",
-        background: "var(--bg-2)", color: "var(--text-dim)", fontSize: 9,
-        letterSpacing: 0.08, textTransform: "uppercase",
-      }}>
-        <span>Время</span><span>Цена</span><span style={{ textAlign: "right" }}>Объём</span><span style={{ textAlign: "right" }}>Стоимость</span>
-      </div>
-      {trades.map((tr, i) => (
-        <div key={tr.id} style={{
-          display: "grid", gridTemplateColumns: "auto 1fr 1fr 1fr",
-          gap: 6, padding: "3px 12px", alignItems: "center",
-          color: tr.side === "buy" ? "var(--green)" : "var(--red)",
-          background: i === 0 ? (tr.side === "buy" ? "oklch(0.78 0.16 155 / 0.07)" : "oklch(0.70 0.20 25 / 0.07)") : "transparent",
-          transition: "background 0.4s",
-        }}>
-          <span style={{ color: "var(--text-dim)" }}>{tr.t}</span>
-          <span>{tr.side === "buy" ? "▲" : "▼"} {tr.price.toFixed(2)}</span>
-          <span style={{ textAlign: "right", color: "var(--text)" }}>{tr.size.toFixed(2)}</span>
-          <span style={{ textAlign: "right", color: "var(--text-dim)" }}>{(tr.size * tr.price).toFixed(0)}$</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function makeTrade(mid) {
-  const side = Math.random() > 0.5 ? "buy" : "sell";
-  const price = mid + (Math.random() - 0.5) * 0.8;
-  const size = Math.random() * 4 + 0.05;
-  const d = new Date();
-  const t = `${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}:${String(d.getSeconds()).padStart(2,"0")}`;
-  return { id: Math.random(), side, price, size, t };
-}
-
 /* Export */
 Object.assign(window, {
   CommandPalette, MissionModal,
-  CandlestickChart, OrderBook, FlowHeatmap, LiveTrades,
   AnalyticsPageEnhanced,
 });

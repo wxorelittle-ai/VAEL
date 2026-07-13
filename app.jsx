@@ -216,6 +216,9 @@ function App() {
       case "opps":      return <OpportunitiesPage lang={t.lang} />;
       case "memory":    return <MemoryPageEnhanced lang={t.lang} />;
       case "analytics": return <AnalyticsPageEnhanced lang={t.lang} />;
+      case "analyst":   return <AnalystPage lang={t.lang} />;
+      case "airdrops":  return <AirdropRadarPage lang={t.lang} />;
+      case "freedrops": return <FreeAirdropsPage lang={t.lang} />;
       case "watchlist": return <WatchlistPage lang={t.lang} />;
       case "alerts":    return <AlertsPage lang={t.lang} />;
       case "reports":   return <ReportsPage lang={t.lang} />;

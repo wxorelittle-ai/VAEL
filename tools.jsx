@@ -76,13 +76,65 @@ function minutesAgo(m) {
   return `${Math.floor(h / 24)}д назад`;
 }
 
+/* Deterministic per-wallet figures (hash of the address) so each wallet differs */
+function hashStr(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
+function walletBalance(wallet) {
+  const h = hashStr(wallet.addr || wallet.name || "");
+  return { usd: 5000 + (h % 4000000), tokens: 2 + (h % 7) };
+}
+
+/* ── Etherscan V2 — real on-chain balance/txs when ETHERSCAN_API_KEY is set ── */
+const ETHERSCAN_V2 = "https://api.etherscan.io/v2/api";
+async function etherscanBalance(addr, key) {
+  const res = await fetch(`${ETHERSCAN_V2}?chainid=1&module=account&action=balance&address=${addr}&tag=latest&apikey=${key}`);
+  const j = await res.json();
+  if (j.status !== "1") throw new Error(typeof j.result === "string" ? j.result : (j.message || "etherscan error"));
+  return Number(j.result) / 1e18;
+}
+async function etherscanTxs(addr, key, limit = 10) {
+  const res = await fetch(`${ETHERSCAN_V2}?chainid=1&module=account&action=txlist&address=${addr}&startblock=0&endblock=99999999&page=1&offset=${limit}&sort=desc&apikey=${key}`);
+  const j = await res.json();
+  if (j.status !== "1") return [];
+  return (j.result || []).map(t => ({
+    hash: t.hash, from: t.from, to: t.to,
+    valueEth: Number(t.value) / 1e18, time: +t.timeStamp * 1000,
+    dir: (t.to || "").toLowerCase() === addr.toLowerCase() ? "in" : "out",
+  }));
+}
+function shortHex(a) { return a ? `${a.slice(0, 6)}…${a.slice(-4)}` : "—"; }
+function txAge(ms) {
+  const s = (Date.now() - ms) / 1000;
+  if (s < 60) return `${Math.floor(s)}с`;
+  if (s < 3600) return `${Math.floor(s / 60)}м`;
+  if (s < 86400) return `${Math.floor(s / 3600)}ч`;
+  return `${Math.floor(s / 86400)}д`;
+}
+function useEtherscanWallet(fullAddr) {
+  const [st, setSt] = useState({ loading: false, live: false, hasKey: false, balance: null, txs: [], error: null });
+  useEffect(() => {
+    const key = typeof getApiKey === "function" ? getApiKey("ETHERSCAN_API_KEY") : "";
+    const valid = fullAddr && /^0x[0-9a-fA-F]{40}$/.test(fullAddr);
+    if (!valid || !key) { setSt({ loading: false, live: false, hasKey: !!key, balance: null, txs: [], error: null }); return; }
+    let cancelled = false;
+    setSt(s => ({ ...s, loading: true, hasKey: true, error: null }));
+    Promise.all([etherscanBalance(fullAddr, key), etherscanTxs(fullAddr, key, 10)])
+      .then(([balance, txs]) => { if (!cancelled) setSt({ loading: false, live: true, hasKey: true, balance, txs, error: null }); })
+      .catch(e => { if (!cancelled) setSt({ loading: false, live: false, hasKey: true, balance: null, txs: [], error: e.message }); });
+    return () => { cancelled = true; };
+  }, [fullAddr]);
+  return st;
+}
+
 function WalletDetail({ wallet, onClose }) {
   if (!wallet) return null;
+  const onchain = useEtherscanWallet(wallet.eth);
   const txs = useMemo(() => genTxs(wallet), [wallet.addr]);
   const balanceData = useMemo(() => genSpark(140, 0.12, 40), [wallet.addr]);
+  const balance = useMemo(() => walletBalance(wallet), [wallet.addr]);
+  const cexLink = /cex|hot|binance|coinbase|kraken/i.test(wallet.name || "") ? 96 : (hashStr(wallet.addr || "") % 45 + 8);
 
   const riskFactors = [
-    { name: "Связь с CEX", val: 24, max: 100, color: "var(--green)" },
+    { name: "Связь с CEX", val: cexLink, max: 100, color: cexLink > 70 ? "var(--amber)" : "var(--green)" },
     { name: "Размер транзакций", val: 68, max: 100, color: "var(--amber)" },
     { name: "Частота операций", val: 45, max: 100, color: "var(--accent)" },
     { name: "Контакт с mixers", val: wallet.risk > 70 ? 92 : 8, max: 100, color: wallet.risk > 70 ? "var(--red)" : "var(--green)" },
@@ -142,11 +194,21 @@ function WalletDetail({ wallet, onClose }) {
           borderRadius: 4, padding: "12px 14px",
         }}>
           <div>
-            <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: 0.15, fontWeight: 600, textTransform: "uppercase" }}>Баланс</div>
-            <div style={{ fontFamily: "var(--font-mono)", fontSize: 22, color: "var(--text-bright)", marginTop: 2 }}>
-              <TickerNumber value={140842.42} decimals={2} suffix="" />
+            <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: 0.15, fontWeight: 600, textTransform: "uppercase", display: "flex", alignItems: "center", gap: 5 }}>
+              Баланс
+              {onchain.live && <span style={{ color: "var(--green)", fontSize: 8.5 }}>● ON-CHAIN</span>}
+              {onchain.loading && <span style={{ color: "var(--text-dim)", fontSize: 8.5 }}>…</span>}
             </div>
-            <div className="mono" style={{ fontSize: 10, color: "var(--text-dim)" }}>USD · 4 токена</div>
+            <div style={{ fontFamily: "var(--font-mono)", fontSize: 22, color: "var(--text-bright)", marginTop: 2 }}>
+              {onchain.live
+                ? <><TickerNumber value={onchain.balance} decimals={onchain.balance < 1 ? 4 : 3} /> <span style={{ fontSize: 12, color: "var(--text-dim)" }}>ETH</span></>
+                : <>$<TickerNumber value={balance.usd} decimals={0} suffix="" /></>}
+            </div>
+            <div className="mono" style={{ fontSize: 10, color: onchain.live ? "var(--green)" : "var(--text-dim)" }}>
+              {onchain.live ? `${shortHex(wallet.eth)} · Etherscan`
+                : (wallet.eth && !onchain.hasKey) ? "sim · задайте ETHERSCAN_API_KEY →"
+                : `USD · ${balance.tokens} токен(ов)`}
+            </div>
           </div>
           <div>
             <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: 0.15, fontWeight: 600, textTransform: "uppercase" }}>NET 24Ч</div>
@@ -207,7 +269,7 @@ function WalletDetail({ wallet, onClose }) {
         </Section>
 
         {/* Transactions */}
-        <Section title="ПОСЛЕДНИЕ ТРАНЗАКЦИИ" meta={`${txs.length} операций · 24ч`}>
+        <Section title="ПОСЛЕДНИЕ ТРАНЗАКЦИИ" meta={onchain.live ? `${onchain.txs.length} on-chain · Etherscan` : `${txs.length} операций · sim`}>
           <div style={{ background: "var(--bg-0)", border: "1px solid var(--line)", borderRadius: 4, overflow: "hidden" }}>
             <div style={{
               display: "grid", gridTemplateColumns: "70px 50px 1fr 70px 60px",
@@ -219,9 +281,24 @@ function WalletDetail({ wallet, onClose }) {
               <span>Время</span><span>Тип</span><span>Контрагент</span><span style={{ textAlign: "right" }}>Сумма</span><span style={{ textAlign: "right" }}>USD</span>
             </div>
             <div className="scroll" style={{ maxHeight: 260, overflowY: "auto" }}>
-              {txs.map(tx => (
-                <TxRow key={tx.id} tx={tx} wallet={wallet} />
-              ))}
+              {onchain.live
+                ? onchain.txs.map(tx => {
+                    const cp = tx.dir === "in" ? tx.from : tx.to;
+                    return (
+                      <div key={tx.hash} style={{
+                        display: "grid", gridTemplateColumns: "70px 50px 1fr 70px 60px",
+                        padding: "5px 10px", borderBottom: "1px solid var(--line)",
+                        fontFamily: "var(--font-mono)", fontSize: 10.5, alignItems: "center",
+                      }}>
+                        <span style={{ color: "var(--text-dim)" }}>{txAge(tx.time)}</span>
+                        <span style={{ color: tx.dir === "in" ? "var(--green)" : "var(--red)", fontWeight: 600 }}>{tx.dir === "in" ? "▲ IN" : "▼ OUT"}</span>
+                        <span style={{ color: "var(--text-mid)", overflow: "hidden", textOverflow: "ellipsis" }} title={cp}>{shortHex(cp)}</span>
+                        <span style={{ textAlign: "right", color: "var(--text-bright)" }}>{tx.valueEth.toFixed(3)}</span>
+                        <span style={{ textAlign: "right", color: "var(--text-dim)" }}>ETH</span>
+                      </div>
+                    );
+                  })
+                : txs.map(tx => <TxRow key={tx.id} tx={tx} wallet={wallet} />)}
             </div>
           </div>
         </Section>
@@ -412,6 +489,96 @@ function EquityChart({ curve, capital, width = 540, height = 200 }) {
   );
 }
 
+/* Real backtest: walk live Bybit 15m candles through analyzeMarket, take each
+ * trend-aligned setup with its ATR SL/TP, size at 1% risk × leverage, deduct
+ * fees, and compound a genuine equity curve. Returns { curve:[{v,day}], stats }. */
+/* Map an analyzeMarket reading to an actual trade per selected preset.
+ * Returns { side, sl, tp } or null (no trade this bar). */
+function strategyTrade(a, preset, entry) {
+  if (!a) return null;
+  const rr = 1.8;
+  const mk = (side) => {
+    const slD = Math.max(a.atr * 1.5, entry * 0.004);
+    return { side, sl: side === "buy" ? entry - slD : entry + slD, tp: side === "buy" ? entry + slD * rr : entry - slD * rr };
+  };
+  switch (preset) {
+    case "mean-rev":      // counter-trend: fade RSI extremes
+      if (a.rsi < 32) return mk("buy");
+      if (a.rsi > 68) return mk("sell");
+      return null;
+    case "vol-breakout":  // trend setups confirmed by a volume + volatility surge
+      return (a.setup && a.volRatio > 1.5 && a.atrPct > 0.14) ? { side: a.side, sl: a.sl, tp: a.tp } : null;
+    case "ai-signals":    // only high-conviction setups
+      return (a.setup && a.confidence >= 80) ? { side: a.side, sl: a.sl, tp: a.tp } : null;
+    case "momentum":      // every trend-aligned setup (default engine)
+    default:
+      return a.setup ? { side: a.side, sl: a.sl, tp: a.tp } : null;
+  }
+}
+
+function realBacktest(candles, config) {
+  const cap0 = config.capital;
+  const lev = config.leverage || 1;
+  const feeRate = (config.fees || 0) / 100;   // per side
+  const riskFrac = 0.01;                        // 1% base risk per trade
+  const H = 24;                                 // max 15m candles to resolve (6h)
+  let equity = cap0;
+  const curve = [{ v: equity, day: 0 }];
+  let wins = 0, losses = 0, grossWin = 0, grossLoss = 0;
+  let i = 55, tradeNo = 0;
+
+  while (i <= candles.length - 2) {
+    const a = analyzeMarket(candles.slice(0, i + 1));
+    const entry = candles[i].close;
+    const trade = strategyTrade(a, config.strategy, entry);
+    if (!trade) { i++; continue; }
+    const { side, sl, tp } = trade;
+    const slD = Math.abs(entry - sl) || entry * 0.004;
+    const tpMul = 1.8;
+    let outcomeR = null, exitIdx = Math.min(i + H, candles.length - 1);
+
+    for (let j = i + 1; j <= Math.min(i + H, candles.length - 1); j++) {
+      const c = candles[j];
+      if (side === "buy") {
+        if (c.lo <= sl) { outcomeR = -1; exitIdx = j; break; }
+        if (c.hi >= tp) { outcomeR = tpMul; exitIdx = j; break; }
+      } else {
+        if (c.hi >= sl) { outcomeR = -1; exitIdx = j; break; }
+        if (c.lo <= tp) { outcomeR = tpMul; exitIdx = j; break; }
+      }
+    }
+    if (outcomeR === null) {
+      const exitP = candles[exitIdx].close;
+      const moved = side === "buy" ? (exitP - entry) : (entry - exitP);
+      outcomeR = Math.max(-1, Math.min(tpMul, moved / slD));
+    }
+
+    const riskAmt = equity * riskFrac * lev;
+    const stopFrac = slD / entry;
+    const notional = stopFrac > 0 ? riskAmt / stopFrac : 0;
+    const fee = notional * feeRate * 2;         // entry + exit
+    equity = Math.max(1, equity + outcomeR * riskAmt - fee);
+    if (outcomeR > 0) { wins++; grossWin += outcomeR * riskAmt; }
+    else { losses++; grossLoss += Math.abs(outcomeR * riskAmt); }
+    curve.push({ v: equity, day: ++tradeNo });
+    i = exitIdx + 1;                            // no overlapping trades
+  }
+
+  const last = equity;
+  const totalReturn = (last - cap0) / cap0 * 100;
+  let peak = cap0, maxDD = 0;
+  curve.forEach(p => { peak = Math.max(peak, p.v); const dd = (peak - p.v) / peak * 100; if (dd > maxDD) maxDD = dd; });
+  const rets = [];
+  for (let k = 1; k < curve.length; k++) rets.push((curve[k].v - curve[k - 1].v) / curve[k - 1].v);
+  const mean = rets.length ? rets.reduce((s, x) => s + x, 0) / rets.length : 0;
+  const varr = rets.length ? rets.reduce((s, x) => s + (x - mean) ** 2, 0) / rets.length : 0;
+  const sharpe = varr > 0 ? (mean / Math.sqrt(varr)) * Math.sqrt(rets.length) : 0;
+  const trades = wins + losses;
+  const winRate = trades ? wins / trades * 100 : 0;
+  const profitFactor = grossLoss > 0 ? grossWin / grossLoss : (grossWin > 0 ? 9.99 : 0);
+  return { curve, stats: { totalReturn, maxDD, sharpe, winRate, trades, last, profitFactor } };
+}
+
 function BacktestModal({ open, onClose, asset, lang }) {
   const [phase, setPhase] = useState("config"); // config | running | results
   const [config, setConfig] = useState({
@@ -419,34 +586,56 @@ function BacktestModal({ open, onClose, asset, lang }) {
     period: 30,
     capital: 10000,
     leverage: 1,
-    fees: 0.05,
+    fees: 0.02,
   });
   const [progress, setProgress] = useState(0);
   const [curve, setCurve] = useState(null);
   const [stats, setStats] = useState(null);
+  const [real, setReal] = useState(false);
 
   useEffect(() => {
     if (!open) {
-      setPhase("config"); setProgress(0); setCurve(null); setStats(null);
+      setPhase("config"); setProgress(0); setCurve(null); setStats(null); setReal(false);
     }
   }, [open]);
 
-  function run() {
+  async function run() {
     setPhase("running");
     setProgress(0);
     setCurve([]);
-    const fullCurve = genEquityCurve(config.strategy, config.period, config.capital);
+
+    // pull real Bybit 15m candles for this asset (96 candles/day, cap 1000)
+    let candles = [];
+    try {
+      const sym = typeof toBybitSymbol === "function" ? toBybitSymbol(asset) : String(asset).replace(/[\/\s]/g, "");
+      const limit = Math.min(config.period * 96, 1000);
+      candles = typeof bybitFetchKlines === "function" ? await bybitFetchKlines(sym, "15", limit) : [];
+    } catch (_) { candles = []; }
+
+    let full, stats, real = false;
+    if (candles.length >= 60 && typeof analyzeMarket === "function") {
+      const r = realBacktest(candles, config);
+      full = r.curve; stats = r.stats; real = true;
+    } else {
+      full = genEquityCurve(config.strategy, config.period, config.capital);
+      stats = computeStats(full, config.capital);
+    }
+    setReal(real);
+
+    if (full.length < 3) { setCurve(full); setStats(stats); setPhase("results"); return; }
+
+    const step = Math.max(1, Math.floor(full.length / 30));
     let i = 0;
     const id = setInterval(() => {
-      i = Math.min(i + 3, fullCurve.length);
-      setProgress(Math.round((i / fullCurve.length) * 100));
-      setCurve(fullCurve.slice(0, i));
-      if (i >= fullCurve.length) {
+      i = Math.min(i + step, full.length);
+      setProgress(Math.round((i / full.length) * 100));
+      setCurve(full.slice(0, Math.max(2, i)));
+      if (i >= full.length) {
         clearInterval(id);
-        setStats(computeStats(fullCurve, config.capital));
+        setStats(stats);
         setTimeout(() => setPhase("results"), 200);
       }
-    }, 35);
+    }, 40);
   }
 
   useEffect(() => {
@@ -484,7 +673,7 @@ function BacktestModal({ open, onClose, asset, lang }) {
           background: "var(--bg-2)",
         }}>
           <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--accent)", letterSpacing: "0.18em" }}>BACKTEST LAB · {asset}</span>
-          <span style={{ marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--text-dim)" }}>v6.backtest-engine</span>
+          <span style={{ marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 10, color: real ? "var(--blue)" : "var(--text-dim)" }}>{real ? "● VAEL TA · Bybit 15m" : "vael.backtest-engine"}</span>
           <button onClick={onClose} style={{
             background: "transparent", border: "none",
             color: "var(--text-dim)", fontSize: 16, cursor: "pointer", padding: 2,
@@ -531,12 +720,13 @@ function BacktestModal({ open, onClose, asset, lang }) {
                 </BtField>
               </div>
 
-              <BtField label="Расчётная нагрузка" hint="оценка на симулированных свечах">
+              <BtField label="Параметры прогона" hint="реальные свечи Bybit · 15m">
                 <div style={{ background: "var(--bg-0)", padding: 10, borderRadius: 4, border: "1px solid var(--line)", fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--text-mid)", lineHeight: 1.7 }}>
-                  <div>• Свечей: ~{config.period * 24}</div>
-                  <div>• Сценариев: 1 (основной)</div>
-                  <div>• Комиссия: {config.fees}% / сделку</div>
-                  <div>• Slippage: 0.02% (моделируется)</div>
+                  <div>• Источник: <span style={{ color: "var(--blue)" }}>Bybit spot</span> · TF 15m</div>
+                  <div>• Свечей: ~{Math.min(config.period * 96, 1000)}</div>
+                  <div>• Движок: VAEL TA (EMA50·MACD·RSI·ATR)</div>
+                  <div>• Риск: 1% депо × {config.leverage}× · SL/TP по ATR (R 1:1.8)</div>
+                  <div>• Комиссия: {config.fees}% / сторону</div>
                 </div>
               </BtField>
             </>
@@ -558,7 +748,7 @@ function BacktestModal({ open, onClose, asset, lang }) {
                 <EquityChart curve={curve || []} capital={config.capital} width={620} height={180} />
               </div>
               <div className="mono" style={{ fontSize: 10.5, color: "var(--text-dim)" }}>
-                симуляция {config.period} дней · {STRATEGY_PRESETS.find(s => s.id === config.strategy)?.name}
+                прогон движка VAEL TA · реальные свечи Bybit 15m
               </div>
             </div>
           )}

@@ -530,14 +530,20 @@ if (typeof document !== "undefined" && !document.getElementById("__mission_kf"))
  * Sentiment + Forecast strip (bottom)
  * ────────────────────────────────────────────────────────*/
 function ForecastStrip({ lang }) {
+  // Real market metrics for BTC (proxy for overall market) from live Bybit data
+  const m = typeof useMarketMetrics === "function" ? useMarketMetrics("BTCUSDT", 12000) : null;
+  const senti = m ? m.sentiment : 0;
+  const closeSpark = m ? m.closeSeries : null;
+  const volSpark = m ? m.volSeries : null;
+  const anomSpark = m ? m.anomalySeries : null;
   return (
     <div className="panel" style={{ display: "flex", overflow: "hidden", minHeight: 0 }}>
-      <ForecastCell label="SENTIMENT 1h"  value={0.62} max={1} color="var(--green)" data={genSpark(60, 0.18)} />
-      <ForecastCell label="VOLATILITY"    value={2.4} max={5} color="var(--amber)" data={genSpark(40, 0.32)} suffix="σ" />
-      <ForecastCell label="RISK INDEX"    value={3.1} max={10} color="var(--red)"  data={genSpark(30, 0.22)} />
-      <ForecastCell label="FLOW · NET"    value={+18.4} max={50} color="var(--blue)" data={genSpark(20, 0.42)} suffix="M$" signed />
-      <ForecastCell label="AI FORECAST"   value={87}  max={100} color="var(--accent)" data={genSpark(80, 0.08)} suffix="%" />
-      <ForecastCell label="ANOMALY"       value={0.42} max={1} color="var(--accent-2)" data={genSpark(0.4, 0.3)} />
+      <ForecastCell label="SENTIMENT · BTC" value={senti} max={1} color={senti >= 0 ? "var(--green)" : "var(--red)"} data={closeSpark} signed />
+      <ForecastCell label="VOLATILITY · ATR" value={m ? m.atrPct : 0} max={2} color="var(--amber)" data={closeSpark} suffix="%" />
+      <ForecastCell label="RISK INDEX"    value={m ? m.riskIndex : 0} max={10} color="var(--red)" data={volSpark} />
+      <ForecastCell label="FLOW · NET"    value={m ? m.flowNetM : 0} max={50} color="var(--blue)" data={closeSpark} suffix="M$" signed />
+      <ForecastCell label="AI FORECAST"   value={m ? m.forecast : 0} max={100} color="var(--accent)" data={closeSpark} suffix="%" />
+      <ForecastCell label="ANOMALY · σ"   value={m ? m.anomalyZ : 0} max={4} color="var(--accent-2)" data={anomSpark} signed />
     </div>
   );
 }

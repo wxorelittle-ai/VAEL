@@ -14,12 +14,18 @@ function ToastContainer() {
         duration: 5500,
         ...toast,
       };
-      setToasts(prev => [...prev.slice(-4), t]);
-      const timer = setTimeout(() => {
-        setToasts(prev => prev.filter(x => x.id !== t.id));
-        TOAST_TIMERS.delete(t.id);
-      }, t.duration);
-      TOAST_TIMERS.set(t.id, timer);
+      // defer to a microtask so a toast emitted during another component's
+      // render/commit never triggers a setState-in-render warning
+      const push = () => {
+        setToasts(prev => [...prev.slice(-4), t]);
+        const timer = setTimeout(() => {
+          setToasts(prev => prev.filter(x => x.id !== t.id));
+          TOAST_TIMERS.delete(t.id);
+        }, t.duration);
+        TOAST_TIMERS.set(t.id, timer);
+      };
+      if (typeof queueMicrotask === "function") queueMicrotask(push);
+      else Promise.resolve().then(push);
     };
     return () => { window.__emitToast = null; };
   }, []);

@@ -5,6 +5,7 @@ const TRIGGER_TYPES = [
   { id: "volume",   ru: "Объём за период",     icon: "◇"  },
   { id: "wallet",   ru: "Активность кошелька", icon: "◉"  },
   { id: "signal",   ru: "AI-сигнал агента",    icon: "◆"  },
+  { id: "funding",  ru: "Funding rate",        icon: "%"  },
   { id: "news",     ru: "Новостной триггер",   icon: "▤"  },
   { id: "anomaly",  ru: "Аномалия (σ)",        icon: "△"  },
 ];
@@ -24,58 +25,83 @@ const SEVERITIES = [
   { id: "crit", ru: "КРИТ", color: "var(--red)" },
 ];
 
+/* Rules with a `live` flag actually evaluate against live Bybit data (params).
+ * `live:false` rules are on-chain/news concepts Bybit can't provide → display-only. */
 const SAMPLE_RULES = [
   {
-    id: "R-001",
-    name: "Whale-движение > 10K ETH",
-    trigger: "wallet",
+    id: "R-001", name: "Whale-движение > 10K ETH", trigger: "wallet",
     condition: "amount > 10000 ETH AND wallet.tag IN [whale, fund]",
-    actions: ["notify", "telegram"],
-    severity: "crit",
-    enabled: true,
-    fired: 14,
+    actions: ["notify", "telegram"], severity: "crit", enabled: true, fired: 0, live: false,
   },
   {
-    id: "R-002",
-    name: "Резкая волатильность BTC",
-    trigger: "anomaly",
-    condition: "volatility(BTC) > 3σ за 1h",
-    actions: ["notify", "trade"],
-    severity: "warn",
-    enabled: true,
-    fired: 42,
+    id: "R-002", name: "Резкая волатильность BTC", trigger: "anomaly",
+    sym: "BTCUSDT", params: { metric: "atrPct", op: ">", value: 0.35 },
+    condition: "ATR(BTC · 15m) > 0.35%",
+    actions: ["notify", "trade"], severity: "warn", enabled: true, fired: 0, live: true,
   },
   {
-    id: "R-003",
-    name: "AI-сигнал с confidence ≥ 85%",
-    trigger: "signal",
-    condition: "agent IN [strategy, forecast] AND confidence ≥ 85%",
-    actions: ["notify", "telegram", "trade"],
-    severity: "info",
-    enabled: true,
-    fired: 168,
+    id: "R-003", name: "AI-сигнал confidence ≥ 80%", trigger: "signal",
+    sym: "BTCUSDT", params: { op: ">=", value: 80 },
+    condition: "analyzeMarket.setup AND confidence ≥ 80%",
+    actions: ["notify", "telegram", "trade"], severity: "info", enabled: true, fired: 0, live: true,
   },
   {
-    id: "R-004",
-    name: "Suspicious wallet contact",
-    trigger: "wallet",
+    id: "R-004", name: "Всплеск объёма BTC > 2.5σ", trigger: "volume",
+    sym: "BTCUSDT", params: { metric: "volZ", op: ">", value: 2.5 },
+    condition: "z-score объёма (BTC · 15m) > 2.5σ",
+    actions: ["notify"], severity: "warn", enabled: true, fired: 0, live: true,
+  },
+  {
+    id: "R-005", name: "Импульс цены BTC > 0.8%", trigger: "price",
+    sym: "BTCUSDT", params: { metric: "mom5", op: ">", value: 0.8 },
+    condition: "|импульс BTC · 5×15m| > 0.8%",
+    actions: ["notify"], severity: "info", enabled: true, fired: 0, live: true,
+  },
+  {
+    id: "R-006", name: "Funding ETH экстремум", trigger: "funding",
+    sym: "ETHUSDT", params: { op: ">", value: 0.0003 },
+    condition: "|funding(ETH)| > 0.03%",
+    actions: ["notify", "telegram"], severity: "warn", enabled: true, fired: 0, live: true,
+  },
+  {
+    id: "R-007", name: "Suspicious wallet contact", trigger: "wallet",
     condition: "wallet.risk ≥ 70 AND tx.in IN watchlist",
-    actions: ["notify", "tag", "mission"],
-    severity: "crit",
-    enabled: true,
-    fired: 3,
-  },
-  {
-    id: "R-005",
-    name: "Прорыв цены через ключевой уровень",
-    trigger: "price",
-    condition: "price.cross('EMA200', '4h')",
-    actions: ["notify"],
-    severity: "info",
-    enabled: false,
-    fired: 28,
+    actions: ["notify", "tag", "mission"], severity: "crit", enabled: true, fired: 0, live: false,
   },
 ];
+
+/* ── Real evaluation of a rule against live market metrics ── */
+function alertCmp(a, op, b) {
+  return op === ">" ? a > b : op === ">=" ? a >= b : op === "<" ? a < b : op === "<=" ? a <= b : false;
+}
+function ruleValue(rule, m) {
+  const metric = rule.params && rule.params.metric;
+  switch (rule.trigger) {
+    case "signal":  return m.signalSetup ? (m.signalConf != null ? m.signalConf : m.forecast) : 0;
+    case "anomaly": return metric === "volZ" ? Math.abs(m.anomalyZ) : m.atrPct;
+    case "volume":  return Math.abs(m.anomalyZ);
+    case "price":   return metric === "chg24" ? Math.abs(m.price24hPcnt || 0) : Math.abs(m.mom5 || 0);
+    case "funding": return Math.abs(m.fundingRate || 0);
+    default: return null;
+  }
+}
+function evalRuleCondition(rule, m) {
+  if (!m || !rule.live) return false;
+  const v = ruleValue(rule, m);
+  if (v == null) return false;
+  const p = rule.params || {};
+  return alertCmp(v, p.op || ">", p.value != null ? p.value : 0);
+}
+function describeMatch(rule, m) {
+  switch (rule.trigger) {
+    case "signal":  return `AI-сигнал ${m.signalSide === "buy" ? "ПОКУПКА" : "ПРОДАЖА"} · confidence ${m.signalConf != null ? m.signalConf : m.forecast}%`;
+    case "anomaly": return `Волатильность ATR ${m.atrPct.toFixed(2)}% превысила порог ${rule.params.value}%`;
+    case "volume":  return `Всплеск объёма z=${m.anomalyZ.toFixed(2)}σ (порог ${rule.params.value}σ)`;
+    case "price":   return `Импульс ${m.mom5 >= 0 ? "+" : ""}${m.mom5.toFixed(2)}% за 5×15m`;
+    case "funding": return `Funding ${(m.fundingRate * 100).toFixed(4)}% (|порог| ${(rule.params.value * 100).toFixed(3)}%)`;
+    default: return rule.condition;
+  }
+}
 
 function AlertRulesPanel({ lang }) {
   const [rules, setRules] = useState(SAMPLE_RULES);
@@ -83,6 +109,41 @@ function AlertRulesPanel({ lang }) {
   const [selected, setSelected] = useState(rules[0].id);
 
   const sel = rules.find(r => r.id === selected) || rules[0];
+
+  // ─── live alert engine: watch real Bybit metrics, evaluate rules, fire toasts ───
+  const mBtc = typeof useMarketMetrics === "function" ? useMarketMetrics("BTCUSDT", 10000) : null;
+  const mEth = typeof useMarketMetrics === "function" ? useMarketMetrics("ETHUSDT", 10000) : null;
+  const metricsMap = { BTCUSDT: mBtc, ETHUSDT: mEth };
+  const liveActive = !!(mBtc || mEth);
+  const cooldownRef = useRef({});
+
+  useInterval(() => {
+    const now = Date.now();
+    const fires = [];
+    rules.forEach(r => {
+      if (!r.enabled || !r.live) return;
+      const m = metricsMap[r.sym];
+      if (!evalRuleCondition(r, m)) return;
+      if (now - (cooldownRef.current[r.id] || 0) < 45000) return; // 45s cooldown per rule
+      cooldownRef.current[r.id] = now;
+      fires.push({ id: r.id, r, m });
+    });
+    if (!fires.length) return;
+    setRules(prev => prev.map(r => {
+      const f = fires.find(x => x.id === r.id);
+      return f ? { ...r, fired: (r.fired || 0) + 1, lastFired: now } : r;
+    }));
+    fires.forEach(({ r, m }) => {
+      if (r.actions.includes("notify")) {
+        window.__emitToast?.({
+          kind: r.severity === "crit" ? "crit" : r.severity === "warn" ? "alert" : "info",
+          title: `Алерт · ${r.name}`,
+          body: describeMatch(r, m),
+          meta: `${r.id} · ${r.sym} · ${(SEVERITIES.find(s => s.id === r.severity) || {}).ru}`,
+        });
+      }
+    });
+  }, 6000);
 
   function toggleRule(id) {
     setRules(prev => prev.map(r => r.id === id ? { ...r, enabled: !r.enabled } : r));
@@ -105,7 +166,7 @@ function AlertRulesPanel({ lang }) {
     <div className="panel" style={{ display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
       <PanelHeader
         title="ПРАВИЛА АЛЕРТОВ"
-        meta={`${rules.filter(r => r.enabled).length} активных / ${rules.length}`}
+        meta={`${rules.filter(r => r.enabled).length}/${rules.length} · ${liveActive ? "● LIVE · Bybit" : "подключение…"}`}
         action={
           <button onClick={() => setEditing({
             isNew: true, name: "", trigger: "price",
@@ -129,7 +190,7 @@ function AlertRulesPanel({ lang }) {
           ))}
         </div>
         {/* Detail */}
-        {sel && <RuleDetail rule={sel} onEdit={() => setEditing({ ...sel })} />}
+        {sel && <RuleDetail rule={sel} metrics={metricsMap[sel.sym]} onEdit={() => setEditing({ ...sel })} />}
       </div>
 
       {editing && <RuleEditor rule={editing} onSave={saveEditing} onCancel={() => setEditing(null)} />}
@@ -211,10 +272,21 @@ const iconBtnStyle = {
   display: "flex", alignItems: "center", justifyContent: "center",
 };
 
-function RuleDetail({ rule, onEdit }) {
+function fmtRuleVal(rule, v) {
+  if (v == null || isNaN(v)) return "—";
+  if (rule.trigger === "funding") return `${(v * 100).toFixed(4)}%`;
+  if (rule.trigger === "signal") return `${Math.round(v)}%`;
+  if (rule.trigger === "price") return `${v.toFixed(2)}%`;
+  if (rule.trigger === "anomaly" && (!rule.params || !rule.params.metric || rule.params.metric === "atrPct")) return `${v.toFixed(2)}%`;
+  return `${v.toFixed(2)}σ`;
+}
+
+function RuleDetail({ rule, metrics, onEdit }) {
   const trig = TRIGGER_TYPES.find(t => t.id === rule.trigger);
   const sev = SEVERITIES.find(s => s.id === rule.severity);
-  const fireHistory = useMemo(() => genSpark(rule.fired || 1, 0.35, 18), [rule.id]);
+  const cur = rule.live && metrics ? ruleValue(rule, metrics) : null;
+  const thr = rule.params ? rule.params.value : null;
+  const firing = cur != null && thr != null && alertCmp(cur, (rule.params && rule.params.op) || ">", thr);
 
   return (
     <div className="scroll" style={{ padding: 14, overflowY: "auto", display: "flex", flexDirection: "column", gap: 14 }}>
@@ -249,22 +321,38 @@ function RuleDetail({ rule, onEdit }) {
         </div>
       </div>
 
-      <div>
-        <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: 0.15, fontWeight: 600, textTransform: "uppercase", marginBottom: 6 }}>СТАТИСТИКА</div>
-        <div style={{
-          display: "grid", gridTemplateColumns: "1fr 1fr 1fr",
-          gap: 6,
-        }}>
-          <RuleStat label="ВСЕГО" v={rule.fired} c="var(--text-bright)" />
-          <RuleStat label="24Ч" v={Math.floor(rule.fired * 0.18)} c="var(--accent)" />
-          <RuleStat label="ЛОЖНЫХ" v={Math.floor(rule.fired * 0.08)} c="var(--amber)" />
-        </div>
-        <div style={{ marginTop: 8 }}>
-          <Sparkline data={fireHistory} width={280} height={40} color={sev.color} />
-          <div className="mono" style={{ fontSize: 9.5, color: "var(--text-dim)", marginTop: 2 }}>
-            частота срабатываний · 18 дней
+      {rule.live && (
+        <div>
+          <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: 0.15, fontWeight: 600, textTransform: "uppercase", marginBottom: 6 }}>
+            ТЕКУЩЕЕ ЗНАЧЕНИЕ · {rule.sym}
+          </div>
+          <div style={{ background: "var(--bg-0)", border: "1px solid var(--line)", borderRadius: 4, padding: "10px 12px" }}>
+            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", fontFamily: "var(--font-mono)", fontSize: 12 }}>
+              <span style={{ color: "var(--text-dim)" }}>текущее: <span style={{ color: firing ? sev.color : "var(--text-bright)", fontWeight: 600 }}>{metrics ? fmtRuleVal(rule, cur) : "…"}</span></span>
+              <span style={{ color: "var(--text-dim)" }}>порог: <span style={{ color: "var(--text-mid)" }}>{fmtRuleVal(rule, thr)}</span></span>
+            </div>
+            <div style={{ height: 4, background: "var(--bg-3)", borderRadius: 2, overflow: "hidden", marginTop: 8 }}>
+              <div style={{ width: `${Math.min(100, thr ? Math.abs(cur || 0) / thr * 100 : 0)}%`, height: "100%", background: firing ? sev.color : "var(--accent)", transition: "width 0.4s" }} />
+            </div>
+            <div className="mono" style={{ fontSize: 9.5, color: firing ? sev.color : "var(--text-dim)", marginTop: 5 }}>
+              {metrics ? (firing ? "▲ УСЛОВИЕ ВЫПОЛНЕНО" : "ожидание условия · live Bybit") : "загрузка данных…"}
+            </div>
           </div>
         </div>
+      )}
+
+      <div>
+        <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: 0.15, fontWeight: 600, textTransform: "uppercase", marginBottom: 6 }}>СТАТИСТИКА</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
+          <RuleStat label="СРАБОТАЛО" v={rule.fired || 0} c="var(--text-bright)" />
+          <RuleStat label="РЕЖИМ" v={rule.live ? "LIVE" : "SIM"} c={rule.live ? "var(--blue)" : "var(--text-dim)"} />
+          <RuleStat label="ПОСЛЕДНЕЕ" v={rule.lastFired ? new Date(rule.lastFired).toLocaleTimeString("ru-RU", { hour12: false }) : "—"} c="var(--accent)" />
+        </div>
+        {!rule.live && (
+          <div className="mono" style={{ fontSize: 9.5, color: "var(--text-dim)", marginTop: 8, lineHeight: 1.5 }}>
+            ↳ триггер on-chain/news — Bybit таких данных не отдаёт; правило отображается, но не исполняется.
+          </div>
+        )}
       </div>
     </div>
   );

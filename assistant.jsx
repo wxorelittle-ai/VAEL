@@ -1,9 +1,9 @@
 /* assistant.jsx — VAEL AI Assistant chat panel with real claude.complete integration */
 
 const ASSISTANT_GREETINGS = [
-  "VAEL готов. Я вижу 12 агентов в сети, 6 активных миссий и 7 алертов. Чем помочь?",
-  "Подключён к ядру v6.2.41. Сеть стабильна, latency 42ms. Спросите про сигналы, позиции или анализ.",
-  "AI-оператор VAEL на связи. Могу объяснить решения агентов, проанализировать сигнал, рассказать про миссию.",
+  "VAEL на связи. Анализирую реальный рынок Bybit в реальном времени. Спросите: «проанализируй BTC», «сентимент ETH», «текущий сигнал», «оцени риск».",
+  "AI-аналитик VAEL готов. Тяну живые данные — цена, тренд, RSI/MACD, funding, объёмы. Что разобрать?",
+  "Подключён к данным Bybit. Могу дать TA-разбор монеты, оценить риск, показать сигнал движка. С чего начнём?",
 ];
 
 const SYSTEM_CONTEXT = `Ты VAEL — AI-оператор крипто-аналитической платформы агентов. Отвечай кратко (1-4 предложения), технологично, на русском.
@@ -19,17 +19,119 @@ const SYSTEM_CONTEXT = `Ты VAEL — AI-оператор крипто-анал�
 Стиль: точный, без эмоций, используй термины (confidence, sentiment, drawdown, latency, sigma, whale). Если вопрос вне домена (общие темы, болтовня) — мягко возвращай к работе платформы.`;
 
 const SUGGESTED_QUERIES = [
-  "Что показывает текущий сигнал?",
-  "Объясни последнюю критическую тревогу",
-  "Какие миссии сейчас идут?",
-  "Что такое risk score 92?",
-  "Какие агенты сейчас неактивны?",
-  "Как работает планировщик миссий?",
+  "Проанализируй BTC",
+  "Сентимент рынка ETH",
+  "Текущий сигнал по BTC",
+  "Оцени риск SOL",
+  "Стоит ли входить в ETH сейчас?",
+  "Что с волатильностью BTC?",
 ];
 
 function nowMsgTs() {
   const d = new Date();
   return `${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;
+}
+
+/* ─────────────────────────────────────────────────────────
+ * VAEL advisor engine — analyzes REAL Bybit data and gives grounded
+ * technical readouts. Deterministic (works without any LLM, incl. on a
+ * self-hosted deploy). Output is algorithmic TA analysis, NOT investment advice.
+ * ────────────────────────────────────────────────────────*/
+const ADVISOR_DISCLAIMER = "⚠ Алгоритмический TA-анализ на данных Bybit — не инвестиционная рекомендация.";
+
+const ADVISOR_SYMBOLS = {
+  BITCOIN: "BTCUSDT", BTC: "BTCUSDT", ETHEREUM: "ETHUSDT", ETH: "ETHUSDT",
+  SOLANA: "SOLUSDT", SOL: "SOLUSDT", BNB: "BNBUSDT", XRP: "XRPUSDT",
+  AVALANCHE: "AVAXUSDT", AVAX: "AVAXUSDT", CHAINLINK: "LINKUSDT", LINK: "LINKUSDT",
+  DOGE: "DOGEUSDT", TRX: "TRXUSDT", TRON: "TRXUSDT", ADA: "ADAUSDT", CARDANO: "ADAUSDT",
+};
+function assistantSymbol(text) {
+  const t = (text || "").toUpperCase();
+  for (const k in ADVISOR_SYMBOLS) if (t.includes(k)) return ADVISOR_SYMBOLS[k];
+  return "BTCUSDT";
+}
+function advFmt(n) {
+  if (n == null || isNaN(n)) return "—";
+  if (n >= 1000) return n.toLocaleString("en-US", { maximumFractionDigits: 0 });
+  if (n >= 1) return n.toFixed(2);
+  return n.toFixed(4);
+}
+
+async function assistantGather(sym) {
+  const [kl, tk, lin, ls] = await Promise.all([
+    bybitFetchKlines(sym, "15", 100),
+    bybitFetchTicker(sym).catch(() => null),
+    (typeof bybitFetchLinearStats === "function" ? bybitFetchLinearStats(sym) : Promise.resolve(null)).catch(() => null),
+    (typeof bybitFetchLongShort === "function" ? bybitFetchLongShort(sym) : Promise.resolve(null)).catch(() => null),
+  ]);
+  const m = computeMarketMetrics(kl, { ticker: tk, linear: lin, longShort: ls });
+  const a = typeof analyzeMarket === "function" ? analyzeMarket(kl) : null;
+  return { sym, coin: sym.replace("USDT", ""), m, a, ticker: tk };
+}
+
+/* Compact real-data summary (used to ground the LLM path when window.claude exists) */
+function assistantDataSummary(ctx) {
+  const { coin, m, a } = ctx;
+  if (!m) return `${coin}: данные недоступны.`;
+  const p = (v, d = 2) => (v == null ? "n/a" : (+v).toFixed(d));
+  return [
+    `${coin}/USDT price=${advFmt(m.price)} chg24h=${p(m.price24hPcnt)}%`,
+    `trend=${a ? (a.trendDir > 0 ? "up" : a.trendDir < 0 ? "down" : "flat") : "n/a"} RSI=${a ? a.rsi.toFixed(0) : "n/a"} MACD_hist=${a ? p(a.macd.hist) : "n/a"} mom5=${p(m.mom5)}%`,
+    `ATR%=${p(m.atrPct)} volZ=${p(m.anomalyZ, 1)} riskIndex=${p(m.riskIndex, 1)}/10 sentiment=${p(m.sentiment)}`,
+    `funding=${m.fundingRate != null ? (m.fundingRate * 100).toFixed(4) + "%" : "n/a"} longShort=${m.buyRatio != null ? (m.buyRatio * 100).toFixed(0) + "/" + ((1 - m.buyRatio) * 100).toFixed(0) : "n/a"}`,
+    `TA_signal=${a && a.setup ? a.side.toUpperCase() + " conf" + a.confidence + "% SL=" + advFmt(a.sl) + " TP=" + advFmt(a.tp) : "no_setup"}`,
+  ].join("\n");
+}
+
+function assistantAnalyze(question, ctx) {
+  const { coin, m, a } = ctx;
+  const q = (question || "").toLowerCase();
+  if (!m) return `Не удалось получить данные по ${coin} с Bybit. Проверьте соединение и повторите.`;
+
+  const fundTxt = m.fundingRate != null ? `${(m.fundingRate * 100).toFixed(4)}%` : "n/a";
+  const lsTxt = m.buyRatio != null ? `${(m.buyRatio * 100).toFixed(0)}/${((1 - m.buyRatio) * 100).toFixed(0)}` : "n/a";
+  const trend = a ? (a.trendDir > 0 ? "восходящий" : a.trendDir < 0 ? "нисходящий" : "боковой") : "неопределён";
+  const chg = m.price24hPcnt != null ? `${m.price24hPcnt >= 0 ? "+" : ""}${m.price24hPcnt.toFixed(2)}%` : "—";
+
+  const signalLine = a && a.setup
+    ? `${a.side === "buy" ? "▲ ПОКУПКА" : "▼ ПРОДАЖА"} · confidence ${a.confidence}% · вход ~${advFmt(m.price)}, стоп ${advFmt(a.sl)}, цель ${advFmt(a.tp)} (R 1:${a.rr})`
+    : `активного сетапа нет (движок ждёт совпадения факторов, |score| ≥ 2.0)`;
+
+  // ── intent: buy/sell / should-I ──
+  if (/куп|прода|лонг|шорт|стоит ли|входить|зайти|buy|sell|long|short|вход/.test(q)) {
+    if (a && a.setup) {
+      return `${coin}: движок фиксирует сетап — ${signalLine}.\nФакторы: ${a.reasons.join("; ")}.\n${ADVISOR_DISCLAIMER}`;
+    }
+    return `${coin}: сейчас движок сетап не даёт. Тренд ${trend}, RSI ${a ? a.rsi.toFixed(0) : "—"}, MACD ${a && a.macd.hist >= 0 ? "↑" : "↓"}, волатильность ATR ${m.atrPct.toFixed(2)}%. Форсировать вход против отсутствия конфлюенса — статистически невыгодно.\n${ADVISOR_DISCLAIMER}`;
+  }
+
+  // ── intent: risk ──
+  if (/риск|risk|волатил|volatil|опасн/.test(q)) {
+    const lvl = m.riskIndex > 6 ? "ПОВЫШЕННЫЙ — уменьшите размер позиции" : m.riskIndex > 3 ? "умеренный" : "низкий";
+    return `Риск ${coin}: индекс ${m.riskIndex.toFixed(1)}/10 (${lvl}).\n• Волатильность ATR ${m.atrPct.toFixed(2)}% · аномалия объёма z=${m.anomalyZ.toFixed(1)}\n• Funding ${fundTxt} · L/S ${lsTxt}\n${ADVISOR_DISCLAIMER}`;
+  }
+
+  // ── intent: sentiment ──
+  if (/сентимент|настро|sentiment|тон|бычь|медвеж/.test(q)) {
+    const s = m.sentiment > 0.15 ? "бычий" : m.sentiment < -0.15 ? "медвежий" : "нейтральный";
+    return `Сентимент ${coin}: ${s} (${m.sentiment >= 0 ? "+" : ""}${m.sentiment.toFixed(2)}).\n• L/S позиции ${lsTxt} · funding ${fundTxt}\n• Изменение 24ч ${chg} · импульс ${m.mom5 >= 0 ? "+" : ""}${m.mom5.toFixed(2)}%\n${ADVISOR_DISCLAIMER}`;
+  }
+
+  // ── intent: signal ──
+  if (/сигнал|signal/.test(q)) {
+    return `Сигнал ${coin}: ${signalLine}.${a ? `\nRSI ${a.rsi.toFixed(0)} · тренд ${trend} · MACD ${a.macd.hist >= 0 ? "растёт" : "падает"}.` : ""}\n${ADVISOR_DISCLAIMER}`;
+  }
+
+  // ── default: full analysis ──
+  return [
+    `${coin}/USDT · ${advFmt(m.price)} (${chg} за 24ч)`,
+    `• Тренд: ${trend}${a ? ` (EMA9 ${a.emaF > a.emaS ? ">" : "<"} EMA21, цена ${m.price > a.ema50 ? "выше" : "ниже"} EMA50)` : ""}`,
+    `• RSI ${a ? a.rsi.toFixed(0) : "—"} · MACD ${a && a.macd.hist >= 0 ? "растёт" : "падает"} · импульс ${m.mom5 >= 0 ? "+" : ""}${m.mom5.toFixed(2)}%`,
+    `• Волатильность ATR ${m.atrPct.toFixed(2)}% · аномалия объёма z=${m.anomalyZ.toFixed(1)} · risk ${m.riskIndex.toFixed(1)}/10`,
+    `• Деривативы: funding ${fundTxt} · long/short ${lsTxt}`,
+    `• Сигнал движка: ${signalLine}`,
+    ADVISOR_DISCLAIMER,
+  ].join("\n");
 }
 
 function AssistantChat() {
@@ -76,18 +178,28 @@ function AssistantChat() {
     setLoading(true);
 
     try {
-      const conversation = messages
-        .filter(m => m.role !== "system")
-        .slice(-6)
-        .map(m => `${m.role === "user" ? "Пользователь" : "VAEL"}: ${m.content}`)
-        .join("\n\n");
-      const prompt = `${SYSTEM_CONTEXT}\n\n${conversation ? "Контекст диалога:\n" + conversation + "\n\n" : ""}Пользователь: ${content}\n\nVAEL (краткий ответ, 1-4 предложения):`;
-      const response = await window.claude.complete(prompt);
-      setMessages(prev => [...prev, { role: "assistant", content: response.trim(), ts: nowMsgTs() }]);
+      // gather REAL market data for the coin mentioned (defaults to BTC)
+      const sym = assistantSymbol(content);
+      const ctx = await assistantGather(sym);
+      const hasClaude = typeof window !== "undefined" && window.claude && typeof window.claude.complete === "function";
+      let reply;
+      if (hasClaude) {
+        // ground the LLM with the real Bybit data
+        const conversation = messages
+          .filter(m => m.role !== "system").slice(-6)
+          .map(m => `${m.role === "user" ? "Пользователь" : "VAEL"}: ${m.content}`).join("\n\n");
+        const prompt = `${SYSTEM_CONTEXT}\n\nАКТУАЛЬНЫЕ ДАННЫЕ (Bybit, реальные · ${ctx.coin}):\n${assistantDataSummary(ctx)}\n\n${conversation ? "Диалог:\n" + conversation + "\n\n" : ""}Пользователь: ${content}\n\nОтветь строго на основе данных выше — кратко, технически, на русском. Не выдумывай цифры. В конце добавь короткий дисклеймер, что это не инвестиционная рекомендация:`;
+        try { reply = (await window.claude.complete(prompt)).trim(); }
+        catch (_) { reply = assistantAnalyze(content, ctx); }
+      } else {
+        // self-hosted / no LLM → deterministic data-driven analysis
+        reply = assistantAnalyze(content, ctx);
+      }
+      setMessages(prev => [...prev, { role: "assistant", content: reply, ts: nowMsgTs() }]);
     } catch (e) {
       setMessages(prev => [...prev, {
         role: "assistant",
-        content: "Соединение с моделью прервано. Повторите запрос или проверьте статус WS.",
+        content: "Не удалось получить рыночные данные с Bybit. Проверьте соединение и повторите запрос.",
         ts: nowMsgTs(),
         error: true,
       }]);
@@ -178,7 +290,7 @@ function AssistantChat() {
                 VAEL ASSISTANT <PulseDot size={5} color="var(--green)" />
               </div>
               <div className="mono" style={{ fontSize: 9.5, color: "var(--text-dim)", letterSpacing: 0.06 }}>
-                claude · ядро 6.2.41 · online
+                анализ данных Bybit · online
               </div>
             </div>
             <button onClick={() => setOpen(false)} style={{
