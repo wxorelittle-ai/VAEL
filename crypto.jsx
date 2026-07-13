@@ -318,6 +318,12 @@ function CryptoSignalsPanel({ lang }) {
     return [...signals].reverse().find(s => s.status === "active");
   }, [signals]);
 
+  // live read of the market from the TA engine — shown when no full setup fired
+  const currentRead = useMemo(
+    () => (candles.length >= 55 && typeof analyzeMarket === "function") ? analyzeMarket(candles) : null,
+    [candles]
+  );
+
   // verified accuracy stats
   const stats = useMemo(() => {
     const verified = signals.filter(s => s.status === "verified" || s.status === "failed");
@@ -585,7 +591,7 @@ function CryptoSignalsPanel({ lang }) {
 
         {/* Right: signal + trade form */}
         <div style={{ borderLeft: "1px solid var(--line)", display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
-          <ActiveSignalCard signal={activeSignal} onOpen={openFromSignal} flash={pendingFlash === activeSignal?.id} />
+          <ActiveSignalCard signal={activeSignal} read={currentRead} onOpen={openFromSignal} flash={pendingFlash === activeSignal?.id} />
           <DemoTradeForm form={form} setForm={setForm} onSubmit={openManual} price={priceNow} />
         </div>
       </div>
@@ -777,8 +783,34 @@ function TabBtn({ active, onClick, label, count }) {
   );
 }
 
-function ActiveSignalCard({ signal, onOpen, flash }) {
+function ActiveSignalCard({ signal, read, onOpen, flash }) {
   if (!signal) {
+    // no full setup fired — show the engine's live read so the panel is never empty
+    if (read) {
+      const isBuy = read.side === "buy";
+      const col = isBuy ? "var(--green)" : "var(--red)";
+      const pct = Math.min(100, Math.abs(read.score) / 2.0 * 100);
+      return (
+        <div style={{ padding: "10px 14px", borderBottom: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 8, minHeight: 96 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 600, color: "var(--text-mid)", padding: "2px 7px", border: "1px solid var(--line-bright)", borderRadius: 3, letterSpacing: 0.08 }}>⌖ НАБЛЮДЕНИЕ</span>
+            <span className="mono" style={{ fontSize: 11, color: col }}>{isBuy ? "↑ уклон вверх" : "↓ уклон вниз"}</span>
+            <span className="mono" style={{ marginLeft: "auto", fontSize: 10, color: "var(--text-dim)" }}>RSI {read.rsi.toFixed(0)} · {read.trendDir > 0 ? "up" : read.trendDir < 0 ? "down" : "flat"}</span>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 9.5, color: "var(--text-dim)" }}>до сигнала</span>
+            <div style={{ flex: 1, height: 3, background: "var(--bg-3)", borderRadius: 1, overflow: "hidden" }}>
+              <div style={{ height: "100%", width: `${pct}%`, background: col, borderRadius: 1, transition: "width 0.4s" }} />
+            </div>
+            <span className="mono" style={{ fontSize: 10, color: col }}>{Math.abs(read.score).toFixed(1)}/2.0</span>
+          </div>
+          <div style={{ fontSize: 11, color: "var(--text-mid)", lineHeight: 1.4 }}>
+            <span className="mono" style={{ color: "var(--accent)" }}>↳ </span>
+            {read.reasons[0] || "движок анализирует рынок"} · ждёт усиления конфлюенса.
+          </div>
+        </div>
+      );
+    }
     return (
       <div style={{
         padding: "12px 14px",
@@ -787,7 +819,7 @@ function ActiveSignalCard({ signal, onOpen, flash }) {
         display: "flex", alignItems: "center", gap: 8,
         minHeight: 96,
       }}>
-        <span className="mono" style={{ fontSize: 10.5 }}>⌖ ожидание нового сигнала от агентов…</span>
+        <span className="mono" style={{ fontSize: 10.5 }}>⌖ загрузка анализа рынка…</span>
       </div>
     );
   }

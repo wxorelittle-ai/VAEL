@@ -318,11 +318,14 @@ function NewsCard({ n }) {
   const impactColor = { crit: "var(--red)", high: "var(--amber)", med: "var(--blue)", low: "var(--text-mid)" }[n.impact];
   const cat = NEWS_CATS[n.cat];
   return (
-    <div style={{
-      padding: "10px 18px",
-      borderBottom: "1px solid var(--line)",
-      animation: n.isNew ? "newsIn 0.5s ease-out" : "none",
-    }}>
+    <div onClick={() => { if (n.link) window.open(n.link, "_blank", "noopener,noreferrer"); }}
+      title={n.link ? "открыть источник ↗" : undefined}
+      style={{
+        padding: "10px 18px",
+        borderBottom: "1px solid var(--line)",
+        animation: n.isNew ? "newsIn 0.5s ease-out" : "none",
+        cursor: n.link ? "pointer" : "default",
+      }}>
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
         <span style={{
           fontFamily: "var(--font-mono)", fontSize: 9, fontWeight: 600,
@@ -339,7 +342,7 @@ function NewsCard({ n }) {
         }}>{n.impact}</span>
         <span className="chip mono" style={{ fontSize: 9 }}>{n.asset}</span>
         <span style={{ marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--text-dim)" }}>
-          {n.real && <span style={{ color: "var(--green)" }}>● </span>}{n.source.name} · {nowAge(n.ts)} назад
+          {n.real && <span style={{ color: "var(--green)" }}>● </span>}{n.source.name} · {nowAge(n.ts)} назад{n.link ? " ↗" : ""}
         </span>
       </div>
       <div style={{ fontSize: 12.5, color: "var(--text)", lineHeight: 1.5, marginBottom: 6 }}>
@@ -409,6 +412,29 @@ function makeMarketEvent(coin, m) {
   return cands[0];
 }
 
+/* Map a real RSS headline (from /api/news backend) into a news item.
+ * Category/sentiment/asset are inferred from keywords (approximate but grounded). */
+function mapEditorialNews(it) {
+  const t = (it.title || "").toLowerCase();
+  let cat = "analysis", sent = 0, impact = "med";
+  if (/hack|exploit|breach|drain|stolen|attack/.test(t)) { cat = "exploit"; sent = -0.6; impact = "high"; }
+  else if (/sec|regulat|lawsuit|ban\b|court|fine|settle|charge/.test(t)) { cat = "reg"; sent = -0.3; impact = "high"; }
+  else if (/etf|fund|acqui|invest|raise|partner|billion|adopt|treasury/.test(t)) { cat = "biz"; sent = 0.4; impact = "high"; }
+  else if (/upgrade|mainnet|launch|fork|integrat|release|testnet/.test(t)) { cat = "tech"; sent = 0.3; impact = "med"; }
+  else if (/whale|wallet|transfer|moved|outflow|inflow|on-chain/.test(t)) { cat = "onchain"; sent = -0.1; impact = "med"; }
+  if (/surge|rally|soar|gain|jump|bullish|record|approve|win|boost/.test(t)) sent += 0.3;
+  if (/dump|crash|plunge|slump|bearish|drop|fall|loss|reject|sink|fear/.test(t)) sent -= 0.3;
+  sent = Math.max(-1, Math.min(1, sent));
+  let asset = "MULTI";
+  const map = [["bitcoin", "BTC"], ["btc", "BTC"], ["ethereum", "ETH"], [" eth", "ETH"], ["solana", "SOL"], [" sol", "SOL"], ["xrp", "XRP"], ["dogecoin", "DOGE"], ["bnb", "BNB"], ["ripple", "XRP"]];
+  for (const [k, v] of map) if (t.includes(k)) { asset = v; break; }
+  return {
+    id: `NW-${++__newsSeq}`, text: it.title, sent, impact, asset, cat,
+    source: { name: it.source || "RSS", tier: "tier1" }, real: true, editorial: true,
+    link: it.link || null, ts: it.date ? new Date(it.date) : new Date(), isNew: false,
+  };
+}
+
 /* ─────────────────────────────────────────────────────────
  * NewsHost — owns state, ticker, drawer
  * ────────────────────────────────────────────────────────*/
@@ -450,6 +476,28 @@ function NewsHost() {
       setItems(prev => [item, ...prev.map(n => (n.isNew ? { ...n, isNew: false } : n))].slice(0, 40));
     });
   }, [mBtc, mEth]);
+
+  // real editorial headlines from the backend (/api/news) — graceful if no backend
+  useEffect(() => {
+    let cancelled = false;
+    async function loadEditorial() {
+      try {
+        const res = await fetch("/api/news");
+        if (!res.ok) return;
+        const j = await res.json();
+        if (cancelled || !j || !j.ok || !Array.isArray(j.items)) return;
+        const mapped = j.items.slice(0, 25).map(mapEditorialNews);
+        setItems(prev => {
+          const seen = new Set();
+          const merged = [...mapped, ...prev].filter(n => { const k = n.text; if (seen.has(k)) return false; seen.add(k); return true; });
+          return merged.sort((a, b) => b.ts - a.ts).slice(0, 45);
+        });
+      } catch (_) { /* no backend in this environment — keep template + market events */ }
+    }
+    loadEditorial();
+    const id = setInterval(loadEditorial, 5 * 60 * 1000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
 
   // Add new news every 8-15s (deduped vs recent, old items lose their "new" flag)
   useEffect(() => {

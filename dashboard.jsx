@@ -587,20 +587,17 @@ function DashboardPage({ agents, metrics, lang, mission }) {
   return (
     <div data-screen-label="01 Dashboard" style={{
       display: "grid",
-      gridTemplateRows: "auto 1fr auto",
+      gridTemplateRows: "1fr auto",
       gap: "var(--gap)",
       padding: "var(--gap)",
       height: "100%",
       overflow: "hidden",
       minHeight: 0,
     }}>
-      {/* Row 1: top metrics */}
-      <MetricsRow metrics={metrics} lang={lang} />
-
-      {/* Row 2: crypto trading terminal — full width */}
+      {/* crypto trading terminal — full width */}
       <CryptoSignalsPanel lang={lang} />
 
-      {/* Row 3: forecast strip */}
+      {/* forecast strip */}
       <ForecastStrip lang={lang} />
     </div>
   );

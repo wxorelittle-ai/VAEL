@@ -1,0 +1,17 @@
+[Unit]
+Description=VAEL API (news proxy + optional LLM proxy)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/var/www/vael/server
+ExecStart=/usr/bin/node /var/www/vael/server/vael-api.js
+Restart=always
+RestartSec=3
+Environment=PORT=8787
+# Optional — enables the /api/assistant LLM proxy:
+# Environment=ANTHROPIC_API_KEY=sk-ant-xxxxx
+User=www-data
+
+[Install]
+WantedBy=multi-user.target
