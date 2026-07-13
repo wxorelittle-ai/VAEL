@@ -19,6 +19,10 @@ const INDICATOR_TYPES = [
   { id: "cci",        ru: "CCI",                  params: ["period"], defaults: { period: 20 } },
   { id: "psar",       ru: "Parabolic SAR",        params: ["step", "max"], defaults: { step: 0.02, max: 0.2 } },
   { id: "ao",         ru: "Awesome Osc.",         params: ["fast", "slow"], defaults: { fast: 5, slow: 34 } },
+  { id: "ichimoku",   ru: "Ichimoku Cloud",       params: ["conv", "base"], defaults: { conv: 9, base: 26 } },
+  { id: "stoch",      ru: "Stochastic",           params: ["length", "smooth"], defaults: { length: 14, smooth: 3 } },
+  { id: "willr",      ru: "Williams %R",          params: ["period"], defaults: { period: 14 } },
+  { id: "mfi",        ru: "MFI (Money Flow)",     params: ["period"], defaults: { period: 14 } },
   { id: "vwap",       ru: "VWAP",                 params: [],         defaults: {} },
   { id: "vol",        ru: "Volume Profile",       params: ["window"], defaults: { window: 24 } },
   { id: "atr",        ru: "ATR (волатильность)",  params: ["period"], defaults: { period: 14 } },
@@ -228,6 +232,49 @@ const STRATEGY_PRESETS = [
         { uid: "e2", left: "price", op: "gt", right: "em05", connector: "AND" },
       ],
       exit: { type: "trailing", tp: 6, sl: 3, trailing: 2, candles: 24 },
+      sizing: "pct",
+    }),
+  },
+  {
+    key: "ichimoku_trend",
+    title: "Ichimoku Trend",
+    tag: "тренд",
+    desc: "Лонг, когда цена над облаком Ичимоку и Tenkan выше Kijun. Сильный трендовый фильтр.",
+    build: () => ({
+      ...makeNewStrategy(),
+      name: "Ichimoku Trend · 1h",
+      sources: ["price"],
+      indicators: [
+        { uid: "ic01", id: "ichimoku", params: { conv: 9, base: 26 } },
+      ],
+      side: "buy", minConfidence: 78,
+      entry: [
+        { uid: "e1", left: "price", op: "gt", right: "ic01", connector: null },
+        { uid: "e2", left: "ic01", op: "gt", right: "value", rightValue: 0, connector: "AND" },
+      ],
+      exit: { type: "trailing", tp: 6, sl: 3, trailing: 2, candles: 26 },
+      sizing: "pct",
+    }),
+  },
+  {
+    key: "stoch_rev",
+    title: "Stochastic Reversal",
+    tag: "возврат",
+    desc: "Разворот из перепроданности: %K пересекает %D снизу в зоне <20, цена над EMA50.",
+    build: () => ({
+      ...makeNewStrategy(),
+      name: "Stochastic Reversal · 1h",
+      sources: ["price"],
+      indicators: [
+        { uid: "sc01", id: "stoch", params: { length: 14, smooth: 3 } },
+        { uid: "em06", id: "ema", params: { period: 50 } },
+      ],
+      side: "buy", minConfidence: 72,
+      entry: [
+        { uid: "e1", left: "sc01", op: "cross_above", right: "value", rightValue: 20, connector: null },
+        { uid: "e2", left: "price", op: "gt", right: "em06", connector: "AND" },
+      ],
+      exit: { type: "tp_sl", tp: 5, sl: 3, trailing: 2, candles: 24 },
       sizing: "pct",
     }),
   },
@@ -942,6 +989,18 @@ function StrategyPreview({ strategy, asset, step }) {
     return out;
   }, [candles, strategy.indicators]);
 
+  const ichi = useMemo(() => {
+    const has = strategy.indicators.find(i => i.id === "ichimoku");
+    if (!has || candles.length < 55 || typeof taIchimoku !== "function") return null;
+    const conv = has.params?.conv || 9, base = has.params?.base || 26;
+    const out = [];
+    for (let idx = candles.length - 50; idx < candles.length; idx++) {
+      const r = taIchimoku(candles.slice(0, idx + 1), conv, base);
+      out.push({ tenkan: r.tenkan, kijun: r.kijun, spanA: r.spanA, spanB: r.spanB });
+    }
+    return out;
+  }, [candles, strategy.indicators]);
+
   const s = bt ? bt.stats : null;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -950,7 +1009,7 @@ function StrategyPreview({ strategy, asset, step }) {
         <div style={{ background: "var(--bg-1)", border: "1px solid var(--line)", borderRadius: 4, padding: 8 }}>
           {loading
             ? <div style={{ height: 200, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: 11 }}>загрузка свечей Bybit…</div>
-            : <PreviewChart candles={chartCandles} ema={ema} st={st} bb={bb} psar={psar} markers={chartMarkers} width={400} height={200} />}
+            : <PreviewChart candles={chartCandles} ema={ema} st={st} bb={bb} psar={psar} ichi={ichi} markers={chartMarkers} width={400} height={200} />}
           {rsi && !loading && (
             <div style={{ marginTop: 4 }}>
               <div style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--text-dim)", marginBottom: 2 }}>RSI {strategy.indicators.find(i => i.id === "rsi").params.period}</div>
@@ -995,13 +1054,14 @@ function StrategyPreview({ strategy, asset, step }) {
   );
 }
 
-function PreviewChart({ candles, ema, st, bb, psar, markers, width = 400, height = 200 }) {
+function PreviewChart({ candles, ema, st, bb, psar, ichi, markers, width = 400, height = 200 }) {
   const lows = candles.map(c => c.lo), highs = candles.map(c => c.hi);
   const stVals = st ? st.map(p => p.v).filter(v => isFinite(v) && v > 0) : [];
   const bbVals = bb ? bb.flatMap(p => [p.upper, p.lower]).filter(v => isFinite(v) && v > 0) : [];
   const psarVals = psar ? psar.map(p => p.v).filter(v => isFinite(v) && v > 0) : [];
-  const min = Math.min(...lows, ...stVals, ...bbVals, ...psarVals);
-  const max = Math.max(...highs, ...stVals, ...bbVals, ...psarVals);
+  const ichiVals = ichi ? ichi.flatMap(p => [p.spanA, p.spanB, p.tenkan, p.kijun]).filter(v => isFinite(v) && v > 0) : [];
+  const min = Math.min(...lows, ...stVals, ...bbVals, ...psarVals, ...ichiVals);
+  const max = Math.max(...highs, ...stVals, ...bbVals, ...psarVals, ...ichiVals);
   const range = (max - min) || 1;
   const stepX = width / candles.length;
   const candleW = Math.max(2, stepX * 0.6);
@@ -1012,6 +1072,18 @@ function PreviewChart({ candles, ema, st, bb, psar, markers, width = 400, height
   // Bollinger bands — upper/lower dashed, mid faint solid
   const bbLine = (key) => bb ? bb.map((p, i) => `${i === 0 ? "M" : "L"}${i * stepX + stepX/2},${y(p[key])}`).join(" ") : null;
   const bbUpper = bbLine("upper"), bbMid = bbLine("mid"), bbLower = bbLine("lower");
+
+  // Ichimoku — shaded cloud between spanA/spanB (colour by last state) + tenkan/kijun lines
+  let ichiCloud = null, ichiCloudColor = null, ichiTenkan = null, ichiKijun = null;
+  if (ichi && ichi.length) {
+    const aPts = ichi.map((p, i) => `${i * stepX + stepX / 2},${y(p.spanA)}`);
+    const bPts = ichi.map((p, i) => `${i * stepX + stepX / 2},${y(p.spanB)}`).reverse();
+    ichiCloud = "M" + aPts.join(" L") + " L" + bPts.join(" L") + " Z";
+    const last = ichi[ichi.length - 1];
+    ichiCloudColor = last.spanA >= last.spanB ? "var(--green)" : "var(--red)";
+    ichiTenkan = ichi.map((p, i) => `${i === 0 ? "M" : "L"}${i * stepX + stepX / 2},${y(p.tenkan)}`).join(" ");
+    ichiKijun = ichi.map((p, i) => `${i === 0 ? "M" : "L"}${i * stepX + stepX / 2},${y(p.kijun)}`).join(" ");
+  }
 
   // Supertrend line — drawn as coloured segments (green in uptrend, red in downtrend)
   const stSegs = [];
@@ -1041,6 +1113,13 @@ function PreviewChart({ candles, ema, st, bb, psar, markers, width = 400, height
           </g>
         );
       })}
+      {ichi && (
+        <g>
+          <path d={ichiCloud} fill={ichiCloudColor} stroke="none" opacity={0.14} />
+          <path d={ichiTenkan} fill="none" stroke="var(--blue)" strokeWidth={0.9} opacity={0.75} />
+          <path d={ichiKijun} fill="none" stroke="var(--amber)" strokeWidth={0.9} opacity={0.75} />
+        </g>
+      )}
       {bb && (
         <g>
           <path d={bbUpper} fill="none" stroke="var(--blue)" strokeWidth={0.9} strokeDasharray="3 2" opacity={0.7} />

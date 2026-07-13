@@ -266,6 +266,65 @@ function taAwesome(candles, fast = 5, slow = 34) {
   return { value: ao(n - 1), prev: ao(n - 2) };
 }
 
+/* Classic Stochastic → { k, d, kPrev, dPrev } (0..100). Slow %K = SMA(raw%K, smoothK),
+ * %D = SMA(%K, smoothD). K crossing D from <20 = bullish trigger. Own implementation. */
+function taStochastic(candles, length = 14, smoothK = 3, smoothD = 3) {
+  const n = candles ? candles.length : 0;
+  if (n < length + smoothK + smoothD) return { k: 50, d: 50, kPrev: 50, dPrev: 50 };
+  const rawK = [];
+  for (let i = length - 1; i < n; i++) {
+    let hh = -Infinity, ll = Infinity;
+    for (let j = i - length + 1; j <= i; j++) { if (candles[j].hi > hh) hh = candles[j].hi; if (candles[j].lo < ll) ll = candles[j].lo; }
+    rawK.push(hh === ll ? 50 : (candles[i].close - ll) / (hh - ll) * 100);
+  }
+  const k = taSmaSeries(rawK, smoothK);
+  const d = taSmaSeries(k, smoothD);
+  const m = k.length;
+  return { k: k[m - 1], d: d[m - 1], kPrev: k[m - 2], dPrev: d[m - 2] };
+}
+
+/* Williams %R(period) → −100..0. <−80 oversold, >−20 overbought. Own implementation. */
+function taWilliamsR(candles, period = 14) {
+  const n = candles ? candles.length : 0;
+  if (n < period) return -50;
+  let hh = -Infinity, ll = Infinity;
+  for (let j = n - period; j < n; j++) { if (candles[j].hi > hh) hh = candles[j].hi; if (candles[j].lo < ll) ll = candles[j].lo; }
+  return hh === ll ? -50 : (hh - candles[n - 1].close) / (hh - ll) * -100;
+}
+
+/* Money Flow Index(period) → 0..100. Volume-weighted RSI; >80 overbought, <20 oversold.
+ * Own implementation. */
+function taMfi(candles, period = 14) {
+  const n = candles ? candles.length : 0;
+  if (n < period + 1) return 50;
+  const tp = i => (candles[i].hi + candles[i].lo + candles[i].close) / 3;
+  let pos = 0, neg = 0;
+  for (let i = n - period; i < n; i++) {
+    const t = tp(i), tPrev = tp(i - 1), mf = t * (candles[i].v || 0);
+    if (t > tPrev) pos += mf; else if (t < tPrev) neg += mf;
+  }
+  if (neg === 0) return pos === 0 ? 50 : 100;
+  return 100 - 100 / (1 + pos / neg);
+}
+
+/* Ichimoku Kinko Hyo → tenkan/kijun/spanA/spanB + cloud position. Signal uses the
+ * current-candle values (common simplification; the classic cloud is shifted 26
+ * forward). aboveCloud = price over both spans (bullish). Own implementation. */
+function taIchimoku(candles, conv = 9, base = 26, spanBLen = 52) {
+  const n = candles ? candles.length : 0;
+  const hh = (p, end) => { let m = -Infinity; for (let i = end - p + 1; i <= end; i++) if (candles[i].hi > m) m = candles[i].hi; return m; };
+  const ll = (p, end) => { let m = Infinity; for (let i = end - p + 1; i <= end; i++) if (candles[i].lo < m) m = candles[i].lo; return m; };
+  if (n < spanBLen) { const p = n ? candles[n - 1].close : 0; return { tenkan: p, kijun: p, spanA: p, spanB: p, price: p, aboveCloud: false, belowCloud: false }; }
+  const e = n - 1;
+  const tenkan = (hh(conv, e) + ll(conv, e)) / 2;
+  const kijun = (hh(base, e) + ll(base, e)) / 2;
+  const spanA = (tenkan + kijun) / 2;
+  const spanB = (hh(spanBLen, e) + ll(spanBLen, e)) / 2;
+  const price = candles[e].close;
+  const top = Math.max(spanA, spanB), bot = Math.min(spanA, spanB);
+  return { tenkan, kijun, spanA, spanB, price, aboveCloud: price > top, belowCloud: price < bot };
+}
+
 /* Attribute a signal to the agent whose domain drove it (cosmetic, but honest) */
 function agentForSignal(a) {
   const macdTurn = a.macd && ((a.side === "buy" && a.macd.hist > 0 && a.macd.histPrev <= 0) ||
@@ -446,4 +505,5 @@ Object.assign(window, {
   taVolAnomaly, computeMarketMetrics,
   taSmaSeries, taRsiSeries, taStochRsi, taSupertrend, taDmi, taBollinger,
   taCci, taParabolicSar, taAwesome,
+  taStochastic, taWilliamsR, taMfi, taIchimoku,
 });
