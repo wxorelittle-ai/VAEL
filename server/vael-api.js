@@ -9,8 +9,46 @@
  */
 
 const http = require("http");
+const crypto = require("crypto");
 
 const PORT = process.env.PORT || 8787;
+
+/* ── Bybit private (READ-ONLY key recommended) — HMAC-signed v5 requests.
+ * Keys stay in server env (BYBIT_API_KEY / BYBIT_API_SECRET), never in the browser. */
+async function bybitSigned(path, query) {
+  const key = process.env.BYBIT_API_KEY, secret = process.env.BYBIT_API_SECRET;
+  if (!key || !secret) return { ok: false, error: "BYBIT_API_KEY/SECRET not set on server" };
+  const ts = Date.now().toString(), recv = "5000";
+  const sign = crypto.createHmac("sha256", secret).update(ts + key + recv + query).digest("hex");
+  try {
+    const res = await fetch(`https://api.bybit.com${path}?${query}`, {
+      headers: { "X-BAPI-API-KEY": key, "X-BAPI-TIMESTAMP": ts, "X-BAPI-RECV-WINDOW": recv, "X-BAPI-SIGN": sign },
+    });
+    const j = await res.json();
+    if (j.retCode !== 0) return { ok: false, error: j.retMsg || ("retCode " + j.retCode) };
+    return { ok: true, result: j.result };
+  } catch (e) { return { ok: false, error: e.message }; }
+}
+async function getBybitAccount() {
+  const bal = await bybitSigned("/v5/account/wallet-balance", "accountType=UNIFIED");
+  const pos = await bybitSigned("/v5/position/list", "category=linear&settleCoin=USDT");
+  const out = { ok: !!(bal.ok || pos.ok) };
+  if (bal.ok) {
+    const acc = bal.result.list && bal.result.list[0];
+    out.balance = acc ? {
+      totalEquity: +acc.totalEquity, totalAvailable: +acc.totalAvailableBalance,
+      coins: (acc.coin || []).filter(c => +c.walletBalance > 0).map(c => ({ coin: c.coin, bal: +c.walletBalance, usd: +c.usdValue })),
+    } : null;
+  }
+  if (pos.ok) {
+    out.positions = (pos.result.list || []).filter(p => +p.size > 0).map(p => ({
+      symbol: p.symbol, side: p.side, size: +p.size, entry: +p.avgPrice, mark: +p.markPrice,
+      pnl: +p.unrealisedPnl, lev: p.leverage,
+    }));
+  }
+  if (!bal.ok && !pos.ok) out.error = bal.error || pos.error;
+  return out;
+}
 
 /* ── Real crypto news via free RSS (no API key) ── */
 const FEEDS = [
@@ -143,7 +181,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "OPTIONS") { res.statusCode = 204; res.end(); return; }
   const u = new URL(req.url, "http://localhost");
   try {
-    if (u.pathname === "/api/health") { res.end(JSON.stringify({ ok: true, ts: Date.now(), llm: !!process.env.ANTHROPIC_API_KEY })); return; }
+    if (u.pathname === "/api/health") { res.end(JSON.stringify({ ok: true, ts: Date.now(), llm: !!process.env.ANTHROPIC_API_KEY, bybit: !!process.env.BYBIT_API_KEY })); return; }
     if (u.pathname === "/api/news") {
       const items = await getNews();
       res.end(JSON.stringify({ ok: true, count: items.length, items }));
@@ -155,6 +193,12 @@ const server = http.createServer(async (req, res) => {
     }
     if (u.pathname === "/api/airdrop-tvl") {
       res.end(JSON.stringify({ ok: true, tvl: await getAirdropTvl() }));
+      return;
+    }
+    if (u.pathname === "/api/bybit/account") {
+      const out = await getBybitAccount();
+      res.statusCode = out.ok ? 200 : 503;
+      res.end(JSON.stringify(out));
       return;
     }
     if (u.pathname === "/api/assistant") {

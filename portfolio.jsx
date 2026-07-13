@@ -428,6 +428,51 @@ function AssetHeatmap() {
 /* ─────────────────────────────────────────────────────────
  *  Portfolio Page (root)
  * ────────────────────────────────────────────────────────*/
+/* Real Bybit account panel — self-fetches /api/bybit/account; renders nothing
+ * unless the backend is up AND a read-only Bybit key is configured server-side. */
+function RealAccountPanel() {
+  const [acc, setAcc] = useState(undefined);
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => fetch("/api/bybit/account").then(r => r.json())
+      .then(j => { if (!cancelled) setAcc(j && j.ok ? j : null); })
+      .catch(() => { if (!cancelled) setAcc(null); });
+    load();
+    const id = setInterval(load, 20000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+  if (!acc || !acc.ok) return null;
+  const bal = acc.balance, pos = acc.positions || [];
+  return (
+    <div className="panel" style={{ flexShrink: 0, marginBottom: "var(--gap)", display: "flex", flexDirection: "column" }}>
+      <PanelHeader title="РЕАЛЬНЫЙ АККАУНТ · BYBIT" meta="live · read-only"
+        action={typeof LiveTag === "function" ? <LiveTag status="live" /> : null} />
+      <div style={{ display: "flex", flexShrink: 0 }}>
+        {bal && <BigPfStat label="EQUITY" v={`$${bal.totalEquity.toFixed(2)}`} c="var(--text-bright)" sub={`${(bal.coins || []).length} монет`} />}
+        {bal && <BigPfStat label="ДОСТУПНО" v={`$${bal.totalAvailable.toFixed(2)}`} c="var(--green)" sub="свободно" />}
+        <BigPfStat label="ОТКРЫТЫХ ПОЗИЦИЙ" v={pos.length} c="var(--accent)" sub={pos.length ? "linear · USDT" : "нет"} />
+      </div>
+      {pos.length > 0 && (
+        <div style={{ borderTop: "1px solid var(--line)" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "90px 70px 90px 100px 100px 90px", padding: "5px 14px", background: "var(--bg-2)", fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--text-dim)", letterSpacing: 0.08, textTransform: "uppercase" }}>
+            <span>Символ</span><span>Сторона</span><span style={{ textAlign: "right" }}>Размер</span><span style={{ textAlign: "right" }}>Вход</span><span style={{ textAlign: "right" }}>Mark</span><span style={{ textAlign: "right" }}>uPnL</span>
+          </div>
+          {pos.map((p, i) => (
+            <div key={i} style={{ display: "grid", gridTemplateColumns: "90px 70px 90px 100px 100px 90px", padding: "5px 14px", borderBottom: "1px solid var(--line)", fontFamily: "var(--font-mono)", fontSize: 10.5, alignItems: "center" }}>
+              <span style={{ color: "var(--text-bright)", fontWeight: 600 }}>{p.symbol}</span>
+              <span style={{ color: p.side === "Buy" ? "var(--green)" : "var(--red)", fontWeight: 600 }}>{p.side === "Buy" ? "▲ LONG" : "▼ SHORT"}</span>
+              <span style={{ textAlign: "right", color: "var(--text)" }}>{p.size}</span>
+              <span style={{ textAlign: "right", color: "var(--text-mid)" }}>{p.entry}</span>
+              <span style={{ textAlign: "right", color: "var(--text-bright)" }}>{p.mark}</span>
+              <span style={{ textAlign: "right", color: p.pnl >= 0 ? "var(--green)" : "var(--red)", fontWeight: 600 }}>{p.pnl >= 0 ? "+" : ""}{p.pnl.toFixed(2)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PortfolioPage({ lang }) {
   const [period, setPeriod] = useState("30d");
   const [activeTab, setActiveTab] = useState("positions");
@@ -479,6 +524,9 @@ function PortfolioPage({ lang }) {
           </>
         }
       />
+
+      {/* Real Bybit account (appears only when the backend has a read-only key) */}
+      <RealAccountPanel />
 
       {/* Big numbers row */}
       <div className="panel" style={{ display: "flex", flexShrink: 0, marginBottom: "var(--gap)" }}>
