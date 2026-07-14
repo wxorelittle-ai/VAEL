@@ -695,8 +695,53 @@ function computeMarketMetrics(candles, ctx = {}) {
   };
 }
 
+/* ─────────────────────────────────────────────────────────
+ * Monte Carlo price forecast — geometric Brownian motion calibrated on the
+ * real Bybit return distribution. Returns a percentile "cone" over `horizon`
+ * candles plus a terminal distribution and P(up). Honest probabilistic model,
+ * not a prediction: it shows the range of outcomes the recent volatility implies.
+ * ────────────────────────────────────────────────────────*/
+function monteCarloForecast(candles, horizon = 24, sims = 400) {
+  const n = candles ? candles.length : 0;
+  if (n < 20) return null;
+  const closes = candles.map(c => c.close);
+  const rets = [];
+  for (let i = 1; i < n; i++) rets.push(Math.log(closes[i] / closes[i - 1]));
+  const m = rets.length;
+  const mu = rets.reduce((s, x) => s + x, 0) / m;
+  const sigma = Math.sqrt(rets.reduce((s, x) => s + (x - mu) ** 2, 0) / m);
+  const S0 = closes[n - 1];
+  const drift = mu - 0.5 * sigma * sigma;
+  const gauss = () => {
+    let u = 0, v = 0;
+    while (u === 0) u = Math.random();
+    while (v === 0) v = Math.random();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  };
+  const stepVals = Array.from({ length: horizon }, () => new Float64Array(sims));
+  const terminal = new Float64Array(sims);
+  for (let s = 0; s < sims; s++) {
+    let price = S0;
+    for (let t = 0; t < horizon; t++) { price = price * Math.exp(drift + sigma * gauss()); stepVals[t][s] = price; }
+    terminal[s] = price;
+  }
+  const pct = (arr, q) => {
+    const a = Array.from(arr).sort((x, y) => x - y);
+    return a[Math.min(a.length - 1, Math.max(0, Math.round(q * (a.length - 1))))];
+  };
+  const steps = stepVals.map(sv => ({ p5: pct(sv, 0.05), p25: pct(sv, 0.25), p50: pct(sv, 0.5), p75: pct(sv, 0.75), p95: pct(sv, 0.95) }));
+  const probUp = Array.from(terminal).filter(x => x > S0).length / sims;
+  const med = pct(terminal, 0.5);
+  return {
+    S0, horizon, sims, steps,
+    terminal: { p5: pct(terminal, 0.05), p25: pct(terminal, 0.25), median: med, p75: pct(terminal, 0.75), p95: pct(terminal, 0.95) },
+    probUp, expectedPct: (med - S0) / S0 * 100, sigmaPct: sigma * 100,
+  };
+}
+
 Object.assign(window, {
   analyzeMarket, taEma, taEmaSeries, taRsi, taMacd, taAtr, agentForSignal,
+  monteCarloForecast,
   taVolAnomaly, computeMarketMetrics,
   taSmaSeries, taRsiSeries, taStochRsi, taSupertrend, taDmi, taBollinger,
   taCci, taParabolicSar, taAwesome,

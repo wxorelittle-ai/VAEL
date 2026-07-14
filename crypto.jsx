@@ -294,6 +294,7 @@ function CryptoSignalsPanel({ lang }) {
   const [pendingFlash, setPendingFlash] = useState(null); // signal id of flash
   const [backtestOpen, setBacktestOpen] = useState(false);
   const [studioOpen, setStudioOpen] = useState(false);
+  const [mcOpen, setMcOpen] = useState(false);
   const [customStrategies, setCustomStrategies] = useState([]);
   const seededRef = useRef(null);
 
@@ -535,8 +536,15 @@ function CryptoSignalsPanel({ lang }) {
               padding: "1px 8px", borderRadius: 2,
               background: "var(--bg-2)", color: "var(--accent)",
               border: "1px solid oklch(0.78 0.16 var(--accent-h) / 0.4)",
-              cursor: "pointer", letterSpacing: 0.06, marginRight: 6,
+              cursor: "pointer", letterSpacing: 0.06, marginRight: 4,
             }}>▸ BACKTEST</button>
+            <button onClick={() => setMcOpen(true)} style={{
+              fontFamily: "var(--font-mono)", fontSize: 9.5,
+              padding: "1px 8px", borderRadius: 2,
+              background: "var(--bg-2)", color: "var(--blue)",
+              border: "1px solid oklch(0.7 0.15 240 / 0.45)",
+              cursor: "pointer", letterSpacing: 0.06, marginRight: 6,
+            }}>∿ MONTE CARLO</button>
             {CRYPTO_ASSETS.map((a, i) => (
               <button key={a.sym} onClick={() => setAssetIdx(i)} style={{
                 fontFamily: "var(--font-mono)", fontSize: 9.5,
@@ -644,8 +652,142 @@ function CryptoSignalsPanel({ lang }) {
       </div>
 
       <BacktestModal open={backtestOpen} onClose={() => setBacktestOpen(false)} asset={asset.sym} lang={lang} />
+      <MonteCarloModal open={mcOpen} onClose={() => setMcOpen(false)} candles={candles} asset={asset} price={priceNow} />
       <StrategyStudio open={studioOpen} onClose={() => setStudioOpen(false)} asset={asset.sym} lang={lang}
         onSave={(s) => setCustomStrategies(prev => [...prev, s])} />
+    </div>
+  );
+}
+
+/* ─── Monte Carlo forecast modal — probability cone from real Bybit volatility ─── */
+function MonteCarloModal({ open, onClose, candles, asset, price }) {
+  const [horizon, setHorizon] = useState(24);
+  const [runId, setRunId] = useState(0);
+  const [fc, setFc] = useState(null);
+
+  useEffect(() => {
+    if (!open) return;
+    if (typeof monteCarloForecast !== "function" || !candles || candles.length < 20) { setFc(null); return; }
+    setFc(monteCarloForecast(candles, horizon, 400));
+    // deliberately not depending on `candles` ticks — a stable cone the user re-runs
+    // eslint-disable-next-line
+  }, [open, horizon, runId]);
+
+  useEffect(() => {
+    if (!open) return;
+    const h = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [open, onClose]);
+
+  if (!open) return null;
+  const dec = price < 10 ? 3 : price < 1000 ? 2 : 1;
+  const upColor = fc && fc.probUp >= 0.5 ? "var(--green)" : "var(--red)";
+
+  // SVG cone
+  const W = 660, H = 300, padL = 8, padR = 8, padT = 12, padB = 22;
+  let chart = null;
+  if (fc) {
+    const hist = candles.slice(-20).map(c => c.close);
+    const cone = fc.steps;
+    const lows = [...hist, ...cone.map(s => s.p5), fc.S0];
+    const highs = [...hist, ...cone.map(s => s.p95), fc.S0];
+    const lo = Math.min(...lows), hi = Math.max(...highs), range = (hi - lo) || 1;
+    const totalN = hist.length + cone.length;
+    const x = i => padL + (i / (totalN - 1)) * (W - padL - padR);
+    const y = v => padT + (1 - (v - lo) / range) * (H - padT - padB);
+    const ci = t => hist.length + t;               // x-index of cone step t
+    const nowX = x(hist.length - 1), nowY = y(fc.S0);
+
+    const band = (loKey, hiKey) => {
+      const top = cone.map((s, t) => `${x(ci(t))},${y(s[hiKey])}`);
+      const bot = cone.map((s, t) => `${x(ci(t))},${y(s[loKey])}`).reverse();
+      return `M${nowX},${nowY} L${top.join(" L")} L${bot.join(" L")} L${nowX},${nowY} Z`;
+    };
+    const medianPath = `M${nowX},${nowY} ` + cone.map((s, t) => `L${x(ci(t))},${y(s.p50)}`).join(" ");
+    const histPath = hist.map((v, i) => `${i === 0 ? "M" : "L"}${x(i)},${y(v)}`).join(" ");
+
+    chart = (
+      <svg width="100%" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ display: "block", background: "var(--bg-1)", borderRadius: 4 }}>
+        <path d={band("p5", "p95")} fill="var(--blue)" opacity={0.1} stroke="none" />
+        <path d={band("p25", "p75")} fill="var(--blue)" opacity={0.18} stroke="none" />
+        <path d={medianPath} fill="none" stroke="var(--blue)" strokeWidth={1.4} />
+        <path d={histPath} fill="none" stroke="var(--text-mid)" strokeWidth={1.2} />
+        <line x1={nowX} y1={padT} x2={nowX} y2={H - padB} stroke="var(--line-bright)" strokeWidth={0.7} strokeDasharray="3 3" />
+        <circle cx={nowX} cy={nowY} r={2.5} fill="var(--text-bright)" />
+      </svg>
+    );
+  }
+
+  const rangeLoPct = fc ? (fc.terminal.p5 - fc.S0) / fc.S0 * 100 : 0;
+  const rangeHiPct = fc ? (fc.terminal.p95 - fc.S0) / fc.S0 * 100 : 0;
+
+  return (
+    <div onClick={onClose} style={{
+      position: "fixed", inset: 0, background: "oklch(0 0 0 / 0.6)",
+      backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)", zIndex: 9988,
+      display: "flex", alignItems: "center", justifyContent: "center", animation: "cpFade 0.18s ease-out",
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        width: "min(760px, 95vw)", background: "var(--bg-1)",
+        border: "1px solid var(--line-bright)", borderRadius: 8,
+        boxShadow: "0 24px 60px -12px oklch(0 0 0 / 0.7), var(--glow-strong)",
+        display: "flex", flexDirection: "column", overflow: "hidden", animation: "cpScale 0.2s cubic-bezier(0.16,1,0.3,1)",
+      }}>
+        <header style={{ padding: "12px 18px", borderBottom: "1px solid var(--line)", background: "var(--bg-2)", display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ color: "var(--blue)", fontFamily: "var(--font-mono)", fontSize: 16 }}>∿</div>
+          <div>
+            <div style={{ fontSize: 12, color: "var(--text-bright)", fontWeight: 500 }}>MONTE CARLO ПРОГНОЗ · {asset.sym}</div>
+            <div className="mono" style={{ fontSize: 9.5, color: "var(--text-dim)" }}>{fc ? fc.sims : "…"} симуляций · GBM на волатильности Bybit 15m</div>
+          </div>
+          <div style={{ marginLeft: "auto", display: "flex", gap: 4, alignItems: "center" }}>
+            {[12, 24, 48].map(h => (
+              <button key={h} onClick={() => setHorizon(h)} style={{
+                fontFamily: "var(--font-mono)", fontSize: 10, padding: "3px 9px", borderRadius: 3, cursor: "pointer",
+                background: horizon === h ? "oklch(0.7 0.15 240 / 0.15)" : "var(--bg-0)",
+                color: horizon === h ? "var(--blue)" : "var(--text-dim)",
+                border: `1px solid ${horizon === h ? "oklch(0.7 0.15 240 / 0.5)" : "var(--line)"}`,
+              }}>{h}с</button>
+            ))}
+            <button onClick={() => setRunId(r => r + 1)} title="Пересчитать" style={{
+              fontFamily: "var(--font-mono)", fontSize: 10, padding: "3px 9px", borderRadius: 3, cursor: "pointer",
+              background: "var(--bg-0)", color: "var(--accent)", border: "1px solid oklch(0.78 0.16 var(--accent-h) / 0.4)", marginLeft: 4,
+            }}>↻ пересчёт</button>
+            <button onClick={onClose} style={{ marginLeft: 6, background: "transparent", border: "none", color: "var(--text-dim)", fontSize: 16, cursor: "pointer" }}>✕</button>
+          </div>
+        </header>
+
+        <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
+          {chart || <div style={{ height: 300, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: 11 }}>недостаточно свечей для симуляции…</div>}
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
+            <McStat label={`P(рост) · ${fc ? fc.horizon : horizon}св`} v={fc ? `${(fc.probUp * 100).toFixed(0)}%` : "…"} c={upColor} />
+            <McStat label="МЕДИАНА · ожид." v={fc ? `${fc.expectedPct >= 0 ? "+" : ""}${fc.expectedPct.toFixed(2)}%` : "…"} c={fc && fc.expectedPct >= 0 ? "var(--green)" : "var(--red)"} />
+            <McStat label="ДИАПАЗОН 90%" v={fc ? `${rangeLoPct.toFixed(1)} … +${rangeHiPct.toFixed(1)}%` : "…"} c="var(--text-bright)" />
+            <McStat label="σ · на свечу" v={fc ? `${fc.sigmaPct.toFixed(2)}%` : "…"} c="var(--accent-2)" />
+          </div>
+
+          <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontFamily: "var(--font-mono)", fontSize: 9.5, color: "var(--text-dim)" }}>
+            <span><span style={{ color: "var(--blue)" }}>▬</span> медиана (p50)</span>
+            <span><span style={{ color: "var(--blue)", opacity: 0.5 }}>▬</span> 50% исходов (p25–p75)</span>
+            <span><span style={{ color: "var(--blue)", opacity: 0.3 }}>▬</span> 90% исходов (p5–p95)</span>
+            <span><span style={{ color: "var(--text-mid)" }}>▬</span> история (20 свечей)</span>
+          </div>
+
+          <div style={{ background: "var(--bg-2)", border: "1px dashed var(--line-bright)", borderRadius: 3, padding: "8px 10px", fontSize: 10.5, color: "var(--text-mid)", lineHeight: 1.5 }}>
+            <span className="accent">↳ </span>Это вероятностная модель (геом. броуновское движение на реальном распределении доходностей Bybit), а <b>не</b> предсказание. Показывает диапазон исходов, который подразумевает недавняя волатильность. Не является инвестиционной рекомендацией.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function McStat({ label, v, c }) {
+  return (
+    <div style={{ background: "var(--bg-0)", border: "1px solid var(--line)", borderRadius: 3, padding: "6px 9px" }}>
+      <div style={{ fontSize: 8.5, color: "var(--text-dim)", letterSpacing: 0.1, fontWeight: 600, textTransform: "uppercase" }}>{label}</div>
+      <div style={{ fontFamily: "var(--font-mono)", fontSize: 14, color: c, marginTop: 2 }}>{v}</div>
     </div>
   );
 }
