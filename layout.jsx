@@ -14,10 +14,7 @@ const NAV_ITEMS = [
   { id: "freedrops", ru: "Free Airdrops",en: "Free Airdrops", glyph: "❋" },
   { id: "analyst",   ru: "Аналитик",    en: "Analyst",       glyph: "✦" },
   { id: "analytics", ru: "Аналитика",   en: "Analytics",     glyph: "📈", noEmoji: "▲" },
-  { id: "watchlist", ru: "Watchlist",   en: "Watchlist",     glyph: "◉" },
   { id: "alerts",    ru: "Алерты",      en: "Alerts",        glyph: "!" },
-  { id: "reports",   ru: "Отчёты",      en: "Reports",       glyph: "▤" },
-  { id: "settings",  ru: "Настройки",   en: "Settings",      glyph: "⚙", noEmoji: "✦" },
 ];
 
 function Logo({ collapsed }) {
@@ -47,16 +44,10 @@ function Logo({ collapsed }) {
         </svg>
       </div>
       {!collapsed && (
-        <div>
-          <div style={{
-            fontWeight: 700, fontSize: 14,
-            letterSpacing: "0.22em", color: "var(--text-bright)",
-          }}>VAEL</div>
-          <div style={{
-            fontFamily: "var(--font-mono)", fontSize: 8.5,
-            color: "var(--accent)", letterSpacing: "0.16em",
-          }}>AGENT NETWORK · v6.2.41</div>
-        </div>
+        <div style={{
+          fontWeight: 700, fontSize: 14,
+          letterSpacing: "0.22em", color: "var(--text-bright)",
+        }}>VAEL</div>
       )}
     </div>
   );
@@ -128,61 +119,6 @@ function Sidebar({ active, onNav, lang, sysStats }) {
         ))}
       </nav>
 
-      <div style={{
-        padding: "12px 14px 6px",
-        fontSize: 9.5, letterSpacing: "0.12em", textTransform: "uppercase",
-        color: "var(--text-dim)", fontWeight: 600,
-        marginTop: 8,
-      }}>
-        {lang === "en" ? "System" : "Система"}
-      </div>
-
-      <div style={{ padding: "0 14px 14px", display: "flex", flexDirection: "column", gap: 8, marginTop: 4 }}>
-        <SysRow label={lang === "en" ? "API" : "API"} value={
-          <span style={{ color: "var(--blue)" }}>● ОНЛАЙН</span>
-        } />
-        <SysRow label="Latency" value={
-          <span className="mono">{sysStats.latency}ms</span>
-        } />
-        <SysRow label="WebSocket" value={
-          <span style={{ color: "var(--blue)" }}>● 200 OK</span>
-        } />
-        <SysRow label="Backend" value={
-          <span style={{ color: sysStats.backendLoad > 80 ? "var(--amber)" : "var(--green)" }}>
-            {sysStats.backendLoad}%
-          </span>
-        } />
-        <SysRow label={lang === "en" ? "Agents" : "Агенты"} value={
-          <span className="mono"><span style={{ color: "var(--accent)" }}>{sysStats.activeAgents}</span>/12</span>
-        } />
-        <SysRow label="GPU" value={
-          <span className="mono">{sysStats.gpu}%</span>
-        } />
-        <SysRow label="Memory" value={
-          <span className="mono">{sysStats.mem}GB</span>
-        } />
-      </div>
-
-      <div style={{ marginTop: "auto", padding: "10px 14px", borderTop: "1px solid var(--line)" }}>
-        <div style={{
-          display: "flex", alignItems: "center", gap: 8,
-          padding: "6px 8px", borderRadius: 4,
-          background: "var(--bg-2)", border: "1px solid var(--line)",
-        }}>
-          <div style={{
-            width: 24, height: 24, borderRadius: "50%",
-            background: "linear-gradient(135deg, var(--accent), var(--accent-2))",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            color: "var(--bg-0)", fontSize: 11, fontWeight: 700,
-            flexShrink: 0,
-          }}>А</div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 11, color: "var(--text-bright)" }}>analyst.7</div>
-            <div className="mono" style={{ fontSize: 9, color: "var(--text-dim)" }}>OPERATOR · TIER 2</div>
-          </div>
-          <span style={{ color: "var(--green)", fontSize: 10 }}>●</span>
-        </div>
-      </div>
     </aside>
   );
 }
@@ -277,24 +213,73 @@ function TopBar({ lang, mission, sysStats, onSearch }) {
         }}>7</span>
       </button>
 
-      {/* profile */}
-      <div style={{
-        display: "flex", alignItems: "center", gap: 8,
-        padding: "0 14px",
-        borderLeft: "1px solid var(--line)",
-      }}>
+      {/* profile / личный кабинет — Settings lives in here now */}
+      <ProfileMenu />
+    </header>
+  );
+}
+
+const PROFILE_ITEMS = [
+  { id: "settings",  glyph: "⚙", ru: "Настройки" },
+  { id: "reports",   glyph: "▤", ru: "Отчёты" },
+  { id: "watchlist", glyph: "◉", ru: "Watchlist" },
+];
+
+function ProfileMenu() {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, [open]);
+
+  return (
+    <div style={{ position: "relative", borderLeft: "1px solid var(--line)", display: "flex" }}>
+      <button
+        onClick={e => { e.stopPropagation(); setOpen(o => !o); }}
+        title="Личный кабинет"
+        style={{
+          display: "flex", alignItems: "center", gap: 8,
+          padding: "0 14px", background: open ? "var(--bg-2)" : "transparent",
+          border: "none", cursor: "pointer",
+        }}
+      >
         <div style={{
-          width: 24, height: 24, borderRadius: "50%",
+          width: 26, height: 26, borderRadius: "50%",
           background: "linear-gradient(135deg, var(--accent), var(--accent-2))",
           display: "flex", alignItems: "center", justifyContent: "center",
           color: "var(--bg-0)", fontSize: 11, fontWeight: 700,
         }}>А</div>
-        <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.1 }}>
-          <span style={{ fontSize: 11, color: "var(--text-bright)" }}>analyst.7</span>
-          <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--accent)", letterSpacing: 0.08 }}>T2 · CLR</span>
+        <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--text-dim)" }}>{open ? "▲" : "▼"}</span>
+      </button>
+
+      {open && (
+        <div onClick={e => e.stopPropagation()} style={{
+          position: "absolute", top: "100%", right: 8, marginTop: 4, zIndex: 9995,
+          minWidth: 210, background: "var(--bg-1)",
+          border: "1px solid var(--line-bright)", borderRadius: 6,
+          boxShadow: "0 16px 40px -10px oklch(0 0 0 / 0.6)", overflow: "hidden",
+          animation: "cpScale 0.14s cubic-bezier(0.16,1,0.3,1)",
+        }}>
+          <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--line)", background: "var(--bg-2)" }}>
+            <div style={{ fontSize: 12, color: "var(--text-bright)", fontWeight: 500 }}>Личный кабинет</div>
+            <div className="mono" style={{ fontSize: 9.5, color: "var(--text-dim)", marginTop: 1 }}>analyst.7 · оператор</div>
+          </div>
+          {PROFILE_ITEMS.map(it => (
+            <button key={it.id} onClick={() => { window.__navTo?.(it.id); setOpen(false); }} style={{
+              width: "100%", display: "flex", alignItems: "center", gap: 10,
+              padding: "9px 12px", background: "transparent", border: "none",
+              borderBottom: "1px solid var(--line)", cursor: "pointer", textAlign: "left",
+              color: "var(--text)", fontSize: 12,
+            }}>
+              <span style={{ color: "var(--accent)", fontFamily: "var(--font-mono)", fontSize: 12, width: 14 }}>{it.glyph}</span>
+              {it.ru}
+            </button>
+          ))}
         </div>
-      </div>
-    </header>
+      )}
+    </div>
   );
 }
 

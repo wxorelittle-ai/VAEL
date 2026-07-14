@@ -192,7 +192,8 @@ function makeInitialSignals(candles) {
   if (!candles || candles.length < 62 || typeof analyzeMarket !== "function") return out;
   const HORIZON = 6; // candles ahead to judge outcome
   let id = 1840;
-  for (let idx = 55; idx <= candles.length - HORIZON - 1; idx += 2) {
+  const from = Math.max(55, candles.length - 200);   // keep the seed scan cheap
+  for (let idx = from; idx <= candles.length - HORIZON - 1; idx += 2) {
     const a = analyzeMarket(candles.slice(0, idx + 1));
     if (!a || !a.setup) continue;
     const entry = candles[idx].close;
@@ -464,7 +465,19 @@ function CryptoSignalsPanel({ lang }) {
   // 1-minute candles keep the chart lively; the agent signal/trade layer runs on top.
   // 15-minute candles: the timeframe where the TA engine shows a real positive
   // edge in backtest (5m was too noisy/negative, 1h too slow). EMA50/MACD/ATR.
-  const { candles, ticker, status } = useBybitMarket(asset.bybit, tf, 120, asset.category || "spot");
+  // 400 candles of history so the chart can be panned back in time (view = 120)
+  const { candles, ticker, status } = useBybitMarket(asset.bybit, tf, 400, asset.category || "spot");
+  const VIEW = 120;
+  const [viewOffset, setViewOffset] = useState(0);   // candles back from the live edge
+  useEffect(() => { setViewOffset(0); }, [assetIdx, tf]);
+  const maxOffset = Math.max(0, candles.length - VIEW);
+  const off = Math.min(viewOffset, maxOffset);
+  const atLive = off === 0;
+  const viewCandles = useMemo(
+    () => (candles.length ? candles.slice(Math.max(0, candles.length - VIEW - off), candles.length - off) : []),
+    [candles, off]
+  );
+  const panBy = (n) => setViewOffset(o => Math.max(0, Math.min(maxOffset, o + n)));
   const { orderbook, trades } = useBybitL2(asset.bybit, 50, 40);
   const deriv = useBybitLinearStats(asset.bybit, 15000);
   const longShort = useBybitLongShort(asset.bybit, 60000);
@@ -473,6 +486,8 @@ function CryptoSignalsPanel({ lang }) {
   const [positions, setPositions] = useState([]);
   const [history, setHistory] = useState([]);
   const [form, setForm] = useState({ side: "buy", amount: 500, lev: 1, useSlTp: true });
+  const [budget, setBudget] = useState(loadBudget);   // your trading capital — sizing is derived from it
+  useEffect(() => { try { localStorage.setItem(BUDGET_LS, String(budget)); } catch (_) {} }, [budget]);
   const [hoveredSignalId, setHoveredSignalId] = useState(null);
   const [tab, setTab] = useState("open"); // 'open' | 'history' | 'signals'
   const [pendingFlash, setPendingFlash] = useState(null); // signal id of flash
@@ -563,19 +578,39 @@ function CryptoSignalsPanel({ lang }) {
     const a = analyzeMarket(candles);
     if (!a) return;
     const price = candles[candles.length - 1].close;
-    const DEMO_CAPITAL = 10000, RISK = 0.02;
-    const lev = Math.max(1, +form.lev || 1);
+    const RISK = 0.02;                              // risk 2% of the budget per trade
+    const maxLev = asset.maxLev || 100;
+
+    /* Recommended leverage — derived from setup quality and volatility, and kept
+     * deliberately conservative (never above 10x, cut hard when ATR is high). */
+    let lev = a.setup ? Math.round(a.confidence / 20) : 1;   // conf 55..95% → 3..5
+    if (a.atrPct > 1.0) lev -= 2;
+    if (a.atrPct > 2.0) lev = 1;
+    lev = Math.max(1, Math.min(10, Math.min(lev, maxLev)));
+
+    // margin so that a stop-out costs ~RISK of the budget: margin·lev·slPct = risk$.
+    // Never commit more than half the budget to a single position.
     const slPct = Math.abs(price - a.sl) / price || 0.004;
-    // margin such that a stop-out costs ~2% of capital: margin·lev·slPct = risk$
-    const amount = Math.max(10, Math.min(DEMO_CAPITAL, Math.round((DEMO_CAPITAL * RISK) / (lev * slPct) / 10) * 10));
+    const MAX_MARGIN = budget * 0.5;
+    const amount = Math.max(10, Math.min(MAX_MARGIN, Math.round((budget * RISK) / (lev * slPct) / 10) * 10));
+
+    // which of our strategies fits this market right now
+    const strategy = (typeof matchStrategy === "function" && typeof taDmi === "function")
+      ? matchStrategy({ a, dmi: taDmi(candles, 14), rsi: a.rsi, atrPct: a.atrPct })
+      : null;
+
     const dec = price < 10 ? 4 : 2;
-    setEntryPlan({ side: a.side, entry: price, sl: a.sl, tp: a.tp, amount, lev, conf: a.confidence, setup: a.setup, reasons: a.reasons, rr: a.rr });
-    setForm(f => ({ ...f, side: a.side, amount }));
+    setEntryPlan({
+      side: a.side, entry: price, sl: a.sl, tp: a.tp, amount, lev,
+      notional: amount * lev, riskUsd: Math.round(budget * RISK), budget,
+      conf: a.confidence, setup: a.setup, reasons: a.reasons, rr: a.rr, strategy,
+    });
+    setForm(f => ({ ...f, side: a.side, amount, lev }));
     window.__emitToast?.({
       kind: a.side === "buy" ? "buy" : "sell",
-      title: `${asset.sym} · точка входа найдена`,
-      body: `${a.side === "buy" ? "ЛОНГ" : "ШОРТ"} @ ${price.toFixed(dec)} · маржа $${amount} × ${lev}x = $${amount * lev} (риск 2% от $${DEMO_CAPITAL})`,
-      meta: `conf ${a.confidence}%${a.setup ? "" : " · неполный сетап"} · SL ${a.sl.toFixed(dec)} / TP ${a.tp.toFixed(dec)}`,
+      title: `${asset.sym} · план входа готов`,
+      body: `${a.side === "buy" ? "ЛОНГ" : "ШОРТ"} @ ${price.toFixed(dec)} · маржа $${amount} × ${lev}x = $${amount * lev}${strategy ? ` · ${strategy.name}` : ""}`,
+      meta: `риск $${Math.round(budget * RISK)} (2% от $${budget})${a.setup ? "" : " · неполный сетап"} · SL ${a.sl.toFixed(dec)} / TP ${a.tp.toFixed(dec)}`,
     });
   }
 
@@ -926,21 +961,40 @@ function CryptoSignalsPanel({ lang }) {
 
       {/* CHART + SIGNAL PANEL */}
       <div style={{ flex: 1, display: "grid", gridTemplateColumns: "1.6fr 0.85fr", minHeight: 0, overflow: "hidden" }}>
-        {/* Chart */}
-        <div style={{ position: "relative", minHeight: 0, overflow: "hidden" }}>
+        {/* Chart — scroll wheel pans back through history */}
+        <div
+          onWheel={e => { e.preventDefault(); panBy(e.deltaY > 0 ? 6 : -6); }}
+          style={{ position: "relative", minHeight: 0, overflow: "hidden" }}
+        >
           <ChartWithSignals
-            candles={candles} signals={signals} positions={positions}
+            candles={viewCandles} signals={signals} positions={positions}
             hoveredSignalId={hoveredSignalId}
             onHoverSignal={setHoveredSignalId}
-            livePrice={priceNow} plan={entryPlan}
+            livePrice={atLive ? priceNow : null} plan={atLive ? entryPlan : null}
             width={700} height={320}
           />
+          {/* pan controls */}
+          <div style={{
+            position: "absolute", left: 8, bottom: 8, display: "flex", gap: 4, alignItems: "center",
+            background: "oklch(from var(--bg-0) l c h / 0.75)", padding: "3px 5px",
+            border: "1px solid var(--line)", borderRadius: 4,
+          }}>
+            <PanBtn onClick={() => panBy(30)} disabled={off >= maxOffset} title="раньше">‹‹</PanBtn>
+            <PanBtn onClick={() => panBy(6)} disabled={off >= maxOffset} title="назад">‹</PanBtn>
+            <PanBtn onClick={() => panBy(-6)} disabled={atLive} title="вперёд">›</PanBtn>
+            <PanBtn onClick={() => setViewOffset(0)} disabled={atLive} title="к текущему">››|</PanBtn>
+            <span className="mono" style={{ fontSize: 9, color: atLive ? "var(--green)" : "var(--amber)", marginLeft: 3 }}>
+              {atLive ? "LIVE" : `−${off} св`}
+            </span>
+          </div>
         </div>
 
         {/* Right: signal + trade form */}
         <div style={{ borderLeft: "1px solid var(--line)", display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
           <ActiveSignalCard signal={activeSignal} read={currentRead} onOpen={openFromSignal} flash={pendingFlash === activeSignal?.id} />
-          <DemoTradeForm form={form} setForm={setForm} onSubmit={openManual} price={priceNow} maxLev={asset.maxLev || 100} />
+          {entryPlan && <EntryPlanCard plan={entryPlan} sym={asset.sym} onApply={openManual} onClear={() => setEntryPlan(null)} />}
+          <DemoTradeForm form={form} setForm={setForm} onSubmit={openManual} price={priceNow} maxLev={asset.maxLev || 100}
+            budget={budget} setBudget={setBudget} />
         </div>
       </div>
 
@@ -1351,7 +1405,7 @@ function ActiveSignalCard({ signal, read, onOpen, flash }) {
   );
 }
 
-function DemoTradeForm({ form, setForm, onSubmit, price, maxLev = 100 }) {
+function DemoTradeForm({ form, setForm, onSubmit, price, maxLev = 100, budget, setBudget }) {
   const lev = Math.max(1, +form.lev || 1);
   const notional = (form.amount || 0) * lev;
   const liq = lev > 1
@@ -1364,6 +1418,19 @@ function DemoTradeForm({ form, setForm, onSubmit, price, maxLev = 100 }) {
       <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: "0.15em", fontWeight: 600 }}>
         РУЧНАЯ ДЕМО-СДЕЛКА
       </div>
+      {setBudget && (
+        <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 8, alignItems: "center", fontSize: 11 }}>
+          <span style={{ color: "var(--text-dim)" }} title="Весь торговый капитал — от него считается размер позиции">Бюджет</span>
+          <input type="number" value={budget}
+            onChange={e => setBudget(Math.max(100, +e.target.value || 0))}
+            style={{
+              background: "var(--bg-0)", border: "1px solid var(--line)",
+              color: "var(--text-mid)", padding: "4px 8px", fontFamily: "var(--font-mono)", fontSize: 11,
+              outline: "none", borderRadius: 3, textAlign: "right",
+            }} />
+          <span className="mono" style={{ color: "var(--text-dim)" }}>USDT</span>
+        </div>
+      )}
       <div style={{ display: "flex", gap: 4 }}>
         <button onClick={() => setForm({ ...form, side: "buy" })} style={tradeBtnStyle(form.side === "buy", "var(--green)")}>
           ▲ ЛОНГ
@@ -1429,6 +1496,72 @@ function DemoTradeForm({ form, setForm, onSubmit, price, maxLev = 100 }) {
         ▸ Открыть позицию по ~{price < 10 ? price.toFixed(3) : price < 1000 ? price.toFixed(2) : price.toFixed(0)}
       </button>
     </div>
+  );
+}
+
+/* Your trading capital — all position sizing is derived from it. */
+const BUDGET_LS = "vael.budget";
+function loadBudget() { try { return +localStorage.getItem(BUDGET_LS) || 10000; } catch (_) { return 10000; } }
+
+/* The plan produced by "найти точку входа": which strategy fits, where to enter,
+ * how much of YOUR budget to risk, and what leverage the setup justifies. */
+function EntryPlanCard({ plan, sym, onApply, onClear }) {
+  const c = plan.side === "buy" ? "var(--green)" : "var(--red)";
+  const dec = plan.entry < 10 ? 4 : 2;
+  return (
+    <div style={{ padding: "10px 14px", borderBottom: "1px solid var(--line)", borderLeft: `3px solid ${c}`, background: "var(--bg-2)", display: "flex", flexDirection: "column", gap: 6 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 700, color: c }}>
+          ⌖ ПЛАН ВХОДА · {plan.side === "buy" ? "ЛОНГ" : "ШОРТ"} {sym.split("/")[0]}
+        </span>
+        <span className="mono" style={{ fontSize: 9.5, color: "var(--accent)" }}>conf {plan.conf}%</span>
+        <button onClick={onClear} title="убрать план" style={{ marginLeft: "auto", background: "transparent", border: "none", color: "var(--text-dim)", cursor: "pointer", fontSize: 12 }}>✕</button>
+      </div>
+
+      {plan.strategy && (
+        <div style={{ fontSize: 10.5, color: "var(--text-mid)", lineHeight: 1.4 }}>
+          <span style={{ color: "var(--accent-2)" }}>стратегия: </span>
+          <span style={{ color: "var(--text-bright)" }}>{plan.strategy.name}</span> — {plan.strategy.why}
+        </div>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 5, fontFamily: "var(--font-mono)", fontSize: 10 }}>
+        <PlanBox label="Вход" v={plan.entry.toFixed(dec)} c="var(--text-bright)" />
+        <PlanBox label="Стоп" v={plan.sl.toFixed(dec)} c="var(--red)" />
+        <PlanBox label="Цель" v={plan.tp.toFixed(dec)} c="var(--green)" />
+        <PlanBox label="Маржа" v={`$${plan.amount}`} c="var(--text-bright)" />
+        <PlanBox label="Плечо" v={`${plan.lev}x`} c={plan.lev >= 5 ? "var(--amber)" : "var(--accent)"} />
+        <PlanBox label="Позиция" v={`$${plan.notional}`} c="var(--accent-2)" />
+      </div>
+
+      <div style={{ fontFamily: "var(--font-mono)", fontSize: 9.5, color: "var(--text-dim)" }}>
+        риск ${plan.riskUsd} (2% от ${plan.budget}) · R:R 1:{plan.rr.toFixed(1)}{plan.setup ? "" : " · неполный сетап"}
+      </div>
+
+      <button className="btn btn-accent" onClick={onApply} style={{ fontSize: 11 }}>
+        ▸ Открыть по плану
+      </button>
+    </div>
+  );
+}
+
+function PlanBox({ label, v, c }) {
+  return (
+    <div style={{ background: "var(--bg-0)", border: "1px solid var(--line)", borderRadius: 3, padding: "3px 6px" }}>
+      <div style={{ fontSize: 8, color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: 0.06 }}>{label}</div>
+      <div style={{ fontSize: 11, color: c, marginTop: 1 }}>{v}</div>
+    </div>
+  );
+}
+
+function PanBtn({ onClick, disabled, title, children }) {
+  return (
+    <button onClick={onClick} disabled={disabled} title={title} style={{
+      fontFamily: "var(--font-mono)", fontSize: 10, padding: "1px 6px", borderRadius: 2,
+      background: "var(--bg-2)", color: disabled ? "var(--text-dim)" : "var(--accent)",
+      border: "1px solid var(--line)", cursor: disabled ? "default" : "pointer",
+      opacity: disabled ? 0.4 : 1,
+    }}>{children}</button>
   );
 }
 
