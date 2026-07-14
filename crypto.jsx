@@ -98,9 +98,10 @@ function nowTsHM() {
 /* ─────────────────────────────────────────────────────────
  * Chart with signal markers + position lines
  * ────────────────────────────────────────────────────────*/
-function ChartWithSignals({ candles, signals, positions, hoveredSignalId, onHoverSignal, livePrice, width = 700, height = 280 }) {
-  const minV = Math.min(...candles.map(c => c.lo));
-  const maxV = Math.max(...candles.map(c => c.hi));
+function ChartWithSignals({ candles, signals, positions, hoveredSignalId, onHoverSignal, livePrice, plan, width = 700, height = 280 }) {
+  const planVals = plan ? [plan.sl, plan.tp, plan.entry].filter(v => v != null && isFinite(v)) : [];
+  const minV = Math.min(...candles.map(c => c.lo), ...planVals);
+  const maxV = Math.max(...candles.map(c => c.hi), ...planVals);
   const padBottom = 50; // for volume row
   const padTop = 14;
   const padRight = 56; // for price axis
@@ -257,6 +258,31 @@ function ChartWithSignals({ candles, signals, positions, hoveredSignalId, onHove
         );
       })}
 
+      {/* proposed entry plan (from "найти точку входа") */}
+      {plan && (() => {
+        const c = plan.side === "buy" ? "var(--green)" : "var(--red)";
+        const row = (v, col, label, dash) => (v == null || !isFinite(v)) ? null : (
+          <g>
+            <line x1={0} y1={y(v)} x2={innerW} y2={y(v)} stroke={col} strokeWidth={1} strokeDasharray={dash} opacity={0.9} />
+            <text x={4} y={y(v) - 3} fontFamily="var(--font-mono)" fontSize={9} fontWeight={600} fill={col}>{label} {v < 10 ? v.toFixed(4) : v.toFixed(2)}</text>
+          </g>
+        );
+        return (
+          <g>
+            {row(plan.tp, "var(--green)", "TP", "5 3")}
+            {row(plan.entry, "var(--accent)", `${plan.side === "buy" ? "▲ ВХОД" : "▼ ВХОД"} · $${plan.amount}`, "0")}
+            {row(plan.sl, "var(--red)", "SL", "5 3")}
+            <rect x={innerW - 118} y={padTop + 2} width={114} height={26} rx={3} fill="var(--bg-0)" stroke={c} strokeWidth={0.6} opacity={0.95} />
+            <text x={innerW - 61} y={padTop + 13} textAnchor="middle" fontFamily="var(--font-mono)" fontSize={9.5} fontWeight={700} fill={c}>
+              {plan.side === "buy" ? "ЛОНГ" : "ШОРТ"} · сумма ${plan.amount}
+            </text>
+            <text x={innerW - 61} y={padTop + 23} textAnchor="middle" fontFamily="var(--font-mono)" fontSize={8.5} fill="var(--text-dim)">
+              conf {plan.conf}% · R:R 1:{plan.rr.toFixed(1)}{plan.setup ? "" : " · неполный"}
+            </text>
+          </g>
+        );
+      })()}
+
       {/* current price line — tracks the live ticker (updates every tick) */}
       <line x1={0} y1={lastY} x2={innerW} y2={lastY}
         stroke="var(--accent)" strokeWidth={0.8} strokeDasharray="3 3" opacity={0.7} />
@@ -282,12 +308,13 @@ function ChartWithSignals({ candles, signals, positions, hoveredSignalId, onHove
 function CryptoSignalsPanel({ lang }) {
   const [assetIdx, setAssetIdx] = useState(0);
   const asset = CRYPTO_ASSETS[assetIdx];
+  const [tf, setTf] = useState("15"); // Bybit interval: 1|5|15|60|240|D
 
   // ─── real market data from Bybit (REST history + live WebSocket) ───
   // 1-minute candles keep the chart lively; the agent signal/trade layer runs on top.
   // 15-minute candles: the timeframe where the TA engine shows a real positive
   // edge in backtest (5m was too noisy/negative, 1h too slow). EMA50/MACD/ATR.
-  const { candles, ticker, status } = useBybitMarket(asset.bybit, "15", 120);
+  const { candles, ticker, status } = useBybitMarket(asset.bybit, tf, 120);
   const { orderbook, trades } = useBybitL2(asset.bybit, 50, 40);
   const deriv = useBybitLinearStats(asset.bybit, 15000);
   const longShort = useBybitLongShort(asset.bybit, 60000);
@@ -302,6 +329,7 @@ function CryptoSignalsPanel({ lang }) {
   const [backtestOpen, setBacktestOpen] = useState(false);
   const [studioOpen, setStudioOpen] = useState(false);
   const [mcOpen, setMcOpen] = useState(false);
+  const [entryPlan, setEntryPlan] = useState(null); // proposed entry drawn on the chart
   const [customStrategies, setCustomStrategies] = useState([]);
   const seededRef = useRef(null);
 
@@ -328,6 +356,28 @@ function CryptoSignalsPanel({ lang }) {
     if (hydratedKeyRef.current !== asset.bybit) return; // don't write during a switch
     try { localStorage.setItem(`vael.trades.${asset.bybit}`, JSON.stringify({ positions, history })); } catch (_) {}
   }, [positions, history, asset.bybit]);
+
+  // proposed entry is stale when the symbol or timeframe changes
+  useEffect(() => { setEntryPlan(null); }, [assetIdx, tf]);
+
+  // "Найти точку входа" — read the live setup, draw entry/SL/TP + a 2%-risk size
+  function findEntry() {
+    if (!candles.length || typeof analyzeMarket !== "function") return;
+    const a = analyzeMarket(candles);
+    if (!a) return;
+    const price = candles[candles.length - 1].close;
+    const DEMO_CAPITAL = 10000, RISK = 0.02;
+    const slPct = Math.abs(price - a.sl) / price || 0.004;
+    const amount = Math.max(50, Math.min(DEMO_CAPITAL, Math.round((DEMO_CAPITAL * RISK) / slPct / 10) * 10));
+    setEntryPlan({ side: a.side, entry: price, sl: a.sl, tp: a.tp, amount, conf: a.confidence, setup: a.setup, reasons: a.reasons, rr: a.rr });
+    setForm(f => ({ ...f, side: a.side, amount }));
+    window.__emitToast?.({
+      kind: a.side === "buy" ? "buy" : "sell",
+      title: `${asset.sym} · точка входа найдена`,
+      body: `${a.side === "buy" ? "ЛОНГ" : "ШОРТ"} @ ${price.toFixed(2)} · опт. сумма $${amount} (риск 2% от $${DEMO_CAPITAL})`,
+      meta: `conf ${a.confidence}%${a.setup ? "" : " · неполный сетап"} · SL ${a.sl.toFixed(2)} / TP ${a.tp.toFixed(2)}`,
+    });
+  }
 
   // seed the initial signal set once real candles for this asset have loaded
   useEffect(() => {
@@ -530,7 +580,7 @@ function CryptoSignalsPanel({ lang }) {
         title={`ТРЕЙДИНГ-ТЕРМИНАЛ · ${asset.sym}`}
         meta={`TA-движок · 15m · ${asset.name}`}
         action={
-          <div style={{ display: "flex", gap: 4 }}>
+          <div style={{ display: "flex", gap: 4, flexWrap: "wrap", justifyContent: "flex-end" }}>
             <button onClick={() => setStudioOpen(true)} style={{
               fontFamily: "var(--font-mono)", fontSize: 9.5,
               padding: "1px 8px", borderRadius: 2,
@@ -605,6 +655,37 @@ function CryptoSignalsPanel({ lang }) {
         </div>
       </div>
 
+      {/* TIMEFRAME + FIND-ENTRY BAR */}
+      <div style={{
+        display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap",
+        padding: "5px 14px", borderBottom: "1px solid var(--line)", background: "var(--bg-1)",
+      }}>
+        <span className="mono" style={{ fontSize: 9, color: "var(--text-dim)", marginRight: 4, letterSpacing: 0.08 }}>ТФ</span>
+        {[{ c: "1", l: "1м" }, { c: "5", l: "5м" }, { c: "15", l: "15м" }, { c: "60", l: "1ч" }, { c: "240", l: "4ч" }, { c: "D", l: "1D" }].map(o => {
+          const on = tf === o.c;
+          return (
+            <button key={o.c} onClick={() => setTf(o.c)} style={{
+              fontFamily: "var(--font-mono)", fontSize: 10, padding: "2px 9px", borderRadius: 2, cursor: "pointer",
+              background: on ? "var(--accent-soft)" : "transparent",
+              color: on ? "var(--accent)" : "var(--text-dim)",
+              border: `1px solid ${on ? "oklch(0.78 0.16 var(--accent-h) / 0.4)" : "var(--line)"}`, letterSpacing: 0.04,
+            }}>{o.l}</button>
+          );
+        })}
+        <button onClick={findEntry} style={{
+          marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 600,
+          padding: "3px 12px", borderRadius: 3, cursor: "pointer",
+          background: "oklch(0.78 0.16 var(--accent-h) / 0.14)", color: "var(--accent)",
+          border: "1px solid oklch(0.78 0.16 var(--accent-h) / 0.5)", letterSpacing: 0.05,
+        }}>⌖ НАЙТИ ТОЧКУ ВХОДА</button>
+        {entryPlan && (
+          <button onClick={() => setEntryPlan(null)} title="убрать план" style={{
+            fontFamily: "var(--font-mono)", fontSize: 10, padding: "3px 8px", borderRadius: 3, cursor: "pointer",
+            background: "transparent", color: "var(--text-dim)", border: "1px solid var(--line)",
+          }}>✕</button>
+        )}
+      </div>
+
       {/* DERIVATIVES STATS BAR */}
       <DerivStatsBar stats={deriv} longShort={longShort} />
 
@@ -616,7 +697,7 @@ function CryptoSignalsPanel({ lang }) {
             candles={candles} signals={signals} positions={positions}
             hoveredSignalId={hoveredSignalId}
             onHoverSignal={setHoveredSignalId}
-            livePrice={priceNow}
+            livePrice={priceNow} plan={entryPlan}
             width={700} height={320}
           />
         </div>
