@@ -587,18 +587,15 @@ function DashboardPage({ agents, metrics, lang, mission }) {
   return (
     <div data-screen-label="01 Dashboard" style={{
       display: "grid",
-      gridTemplateRows: "1fr auto",
+      gridTemplateRows: "1fr",
       gap: "var(--gap)",
       padding: "var(--gap)",
       height: "100%",
       overflow: "hidden",
       minHeight: 0,
     }}>
-      {/* crypto trading terminal — full width */}
+      {/* crypto trading terminal — full width (demo trading kept) */}
       <CryptoSignalsPanel lang={lang} />
-
-      {/* forecast strip */}
-      <ForecastStrip lang={lang} />
     </div>
   );
 }

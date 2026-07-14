@@ -85,10 +85,11 @@ function useBybitMarket(symbol, interval = "1", maxCandles = 90) {
   const [status, setStatus] = useState("connecting");
   const candlesRef = useRef([]);
   const tickerRef = useRef(null);
+  const lastWsRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
-    let ws = null, pingId = null, reconnectId = null;
+    let ws = null, pingId = null, reconnectId = null, pollId = null;
 
     candlesRef.current = [];
     tickerRef.current = null;
@@ -133,6 +134,7 @@ function useBybitMarket(symbol, interval = "1", maxCandles = 90) {
         return;                                      // stale/out-of-order
       }
       candlesRef.current = arr;
+      lastWsRef.current = Date.now();
       setCandles(arr);
     }
 
@@ -163,6 +165,7 @@ function useBybitMarket(symbol, interval = "1", maxCandles = 90) {
           if (d) {
             const merged = mergeTicker(tickerRef.current, d);
             tickerRef.current = merged;
+            lastWsRef.current = Date.now();
             setTicker(merged);
             setStatus("live");
           }
@@ -177,9 +180,26 @@ function useBybitMarket(symbol, interval = "1", maxCandles = 90) {
     }
     connect();
 
+    // 3) REST fallback — if the WS goes quiet (blocked / dropped / sparse market),
+    //    re-poll klines+ticker so the chart never freezes. Skips when WS is fresh.
+    pollId = setInterval(async () => {
+      if (cancelled || Date.now() - lastWsRef.current < 10000) return;
+      try {
+        const [kl, tk] = await Promise.all([
+          bybitFetchKlines(symbol, interval, maxCandles),
+          bybitFetchTicker(symbol),
+        ]);
+        if (cancelled) return;
+        candlesRef.current = kl; setCandles(kl);
+        tickerRef.current = tk; setTicker(tk);
+        setStatus(s => (s === "live" ? "live" : "rest"));
+      } catch (_) {}
+    }, 8000);
+
     return () => {
       cancelled = true;
       clearInterval(pingId);
+      clearInterval(pollId);
       clearTimeout(reconnectId);
       if (ws) { ws.onclose = null; try { ws.close(); } catch (_) {} }
     };

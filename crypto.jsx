@@ -98,7 +98,7 @@ function nowTsHM() {
 /* ─────────────────────────────────────────────────────────
  * Chart with signal markers + position lines
  * ────────────────────────────────────────────────────────*/
-function ChartWithSignals({ candles, signals, positions, hoveredSignalId, onHoverSignal, width = 700, height = 280 }) {
+function ChartWithSignals({ candles, signals, positions, hoveredSignalId, onHoverSignal, livePrice, width = 700, height = 280 }) {
   const minV = Math.min(...candles.map(c => c.lo));
   const maxV = Math.max(...candles.map(c => c.hi));
   const padBottom = 50; // for volume row
@@ -114,7 +114,8 @@ function ChartWithSignals({ candles, signals, positions, hoveredSignalId, onHove
   const maxVol = Math.max(...candles.map(c => c.v), 1);
 
   const last = candles[candles.length - 1];
-  const lastY = y(last.close);
+  const lp = (livePrice != null && isFinite(livePrice)) ? livePrice : last.close;
+  const lastY = y(lp);
 
   const priceLevels = [0.2, 0.4, 0.6, 0.8];
 
@@ -256,14 +257,20 @@ function ChartWithSignals({ candles, signals, positions, hoveredSignalId, onHove
         );
       })}
 
-      {/* current price line */}
+      {/* current price line — tracks the live ticker (updates every tick) */}
       <line x1={0} y1={lastY} x2={innerW} y2={lastY}
         stroke="var(--accent)" strokeWidth={0.8} strokeDasharray="3 3" opacity={0.7} />
+      {/* pulsing live-price dot at the leading edge */}
+      <circle cx={innerW} cy={lastY} r={3.2} fill="var(--accent)">
+        <animate attributeName="r" from="3.2" to="9" dur="1.4s" repeatCount="indefinite" />
+        <animate attributeName="opacity" from="0.7" to="0" dur="1.4s" repeatCount="indefinite" />
+      </circle>
+      <circle cx={innerW} cy={lastY} r={2.6} fill="var(--accent)" />
       <rect x={innerW} y={lastY - 9} width={padRight} height={18}
         fill="var(--accent)" />
       <text x={innerW + padRight / 2} y={lastY + 4} textAnchor="middle"
         fontFamily="var(--font-mono)" fontSize={10} fontWeight={600} fill="var(--bg-0)">
-        {last.close < 10 ? last.close.toFixed(3) : last.close < 1000 ? last.close.toFixed(2) : last.close.toFixed(0)}
+        {lp < 10 ? lp.toFixed(3) : lp < 1000 ? lp.toFixed(2) : lp.toFixed(0)}
       </text>
     </svg>
   );
@@ -609,6 +616,7 @@ function CryptoSignalsPanel({ lang }) {
             candles={candles} signals={signals} positions={positions}
             hoveredSignalId={hoveredSignalId}
             onHoverSignal={setHoveredSignalId}
+            livePrice={priceNow}
             width={700} height={320}
           />
         </div>
