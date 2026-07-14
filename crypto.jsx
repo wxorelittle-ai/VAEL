@@ -400,11 +400,11 @@ function ChartWithSignals({ candles, signals, positions, hoveredSignalId, onHove
         return (
           <g>
             {row(plan.tp, "var(--green)", "TP", "5 3")}
-            {row(plan.entry, "var(--accent)", `${plan.side === "buy" ? "▲ ВХОД" : "▼ ВХОД"} · $${plan.amount}`, "0")}
+            {row(plan.entry, "var(--accent)", `${plan.side === "buy" ? "▲ ВХОД" : "▼ ВХОД"} · $${plan.amount}${plan.lev > 1 ? ` × ${plan.lev}x` : ""}`, "0")}
             {row(plan.sl, "var(--red)", "SL", "5 3")}
             <rect x={innerW - 118} y={padTop + 2} width={114} height={26} rx={3} fill="var(--bg-0)" stroke={c} strokeWidth={0.6} opacity={0.95} />
             <text x={innerW - 61} y={padTop + 13} textAnchor="middle" fontFamily="var(--font-mono)" fontSize={9.5} fontWeight={700} fill={c}>
-              {plan.side === "buy" ? "ЛОНГ" : "ШОРТ"} · сумма ${plan.amount}
+              {plan.side === "buy" ? "ЛОНГ" : "ШОРТ"} · ${plan.amount}{plan.lev > 1 ? ` × ${plan.lev}x` : ""}
             </text>
             <text x={innerW - 61} y={padTop + 23} textAnchor="middle" fontFamily="var(--font-mono)" fontSize={8.5} fill="var(--text-dim)">
               conf {plan.conf}% · R:R 1:{plan.rr.toFixed(1)}{plan.setup ? "" : " · неполный"}
@@ -469,7 +469,7 @@ function CryptoSignalsPanel({ lang }) {
   const [signals, setSignals] = useState([]);
   const [positions, setPositions] = useState([]);
   const [history, setHistory] = useState([]);
-  const [form, setForm] = useState({ side: "buy", amount: 500, useSlTp: true });
+  const [form, setForm] = useState({ side: "buy", amount: 500, lev: 1, useSlTp: true });
   const [hoveredSignalId, setHoveredSignalId] = useState(null);
   const [tab, setTab] = useState("open"); // 'open' | 'history' | 'signals'
   const [pendingFlash, setPendingFlash] = useState(null); // signal id of flash
@@ -520,15 +520,18 @@ function CryptoSignalsPanel({ lang }) {
     if (!a) return;
     const price = candles[candles.length - 1].close;
     const DEMO_CAPITAL = 10000, RISK = 0.02;
+    const lev = Math.max(1, +form.lev || 1);
     const slPct = Math.abs(price - a.sl) / price || 0.004;
-    const amount = Math.max(50, Math.min(DEMO_CAPITAL, Math.round((DEMO_CAPITAL * RISK) / slPct / 10) * 10));
-    setEntryPlan({ side: a.side, entry: price, sl: a.sl, tp: a.tp, amount, conf: a.confidence, setup: a.setup, reasons: a.reasons, rr: a.rr });
+    // margin such that a stop-out costs ~2% of capital: margin·lev·slPct = risk$
+    const amount = Math.max(10, Math.min(DEMO_CAPITAL, Math.round((DEMO_CAPITAL * RISK) / (lev * slPct) / 10) * 10));
+    const dec = price < 10 ? 4 : 2;
+    setEntryPlan({ side: a.side, entry: price, sl: a.sl, tp: a.tp, amount, lev, conf: a.confidence, setup: a.setup, reasons: a.reasons, rr: a.rr });
     setForm(f => ({ ...f, side: a.side, amount }));
     window.__emitToast?.({
       kind: a.side === "buy" ? "buy" : "sell",
       title: `${asset.sym} · точка входа найдена`,
-      body: `${a.side === "buy" ? "ЛОНГ" : "ШОРТ"} @ ${price.toFixed(2)} · опт. сумма $${amount} (риск 2% от $${DEMO_CAPITAL})`,
-      meta: `conf ${a.confidence}%${a.setup ? "" : " · неполный сетап"} · SL ${a.sl.toFixed(2)} / TP ${a.tp.toFixed(2)}`,
+      body: `${a.side === "buy" ? "ЛОНГ" : "ШОРТ"} @ ${price.toFixed(dec)} · маржа $${amount} × ${lev}x = $${amount * lev} (риск 2% от $${DEMO_CAPITAL})`,
+      meta: `conf ${a.confidence}%${a.setup ? "" : " · неполный сетап"} · SL ${a.sl.toFixed(dec)} / TP ${a.tp.toFixed(dec)}`,
     });
   }
 
@@ -568,23 +571,25 @@ function CryptoSignalsPanel({ lang }) {
     if (!candles.length) return;
     const price = candles[candles.length - 1].close;
 
-    // update PnL on positions
+    // update PnL on positions. P&L is on the notional (size = margin × leverage);
+    // the % shown is ROE — return on the margin actually put up (lev-aware).
     setPositions(prev => prev.map(p => {
       const pnl = p.side === "buy"
         ? (price - p.entry) * (p.size / p.entry)
         : (p.entry - price) * (p.size / p.entry);
-      const pnlPct = p.side === "buy"
-        ? (price - p.entry) / p.entry * 100
-        : (p.entry - price) / p.entry * 100;
+      const margin = p.margin != null ? p.margin : p.size;   // legacy positions: lev 1
+      const pnlPct = margin ? (pnl / margin) * 100 : 0;
       return { ...p, currentPrice: price, pnl, pnlPct };
     }));
 
-    // auto-close TP/SL
+    // auto-close: liquidation first (leverage wipes the margin), then TP/SL
     const toClose = [];
     positions.forEach(p => {
+      const hitLiq = p.liq && (p.side === "buy" ? price <= p.liq : price >= p.liq);
       const hitTp = p.tp && (p.side === "buy" ? price >= p.tp : price <= p.tp);
       const hitSl = p.sl && (p.side === "buy" ? price <= p.sl : price >= p.sl);
-      if (hitTp || hitSl) toClose.push({ id: p.id, exitPrice: price, reason: hitTp ? "tp" : "sl" });
+      if (hitLiq) toClose.push({ id: p.id, exitPrice: p.liq, reason: "liq" });
+      else if (hitTp || hitSl) toClose.push({ id: p.id, exitPrice: price, reason: hitTp ? "tp" : "sl" });
     });
     if (toClose.length > 0) {
       toClose.forEach(({ id, exitPrice, reason }) => closePosition(id, exitPrice, reason));
@@ -650,47 +655,54 @@ function CryptoSignalsPanel({ lang }) {
     if (!signal) return;
     const price = candles[candles.length - 1].close;
     const slPct = 0.018, tpPct = 0.035;
-    const newPos = {
-      id: `P-${Date.now()}`,
-      side: signal.side,
-      entry: price,
-      size: form.amount,
+    const newPos = makePosition({
+      side: signal.side, price,
       sl: signal.sl != null ? signal.sl : (signal.side === "buy" ? price * (1 - slPct) : price * (1 + slPct)),
       tp: signal.tp != null ? signal.tp : (signal.side === "buy" ? price * (1 + tpPct) : price * (1 - tpPct)),
       signalId: signal.id,
-      openedAt: nowTsHM(),
-      pnl: 0, pnlPct: 0, currentPrice: price,
-    };
+    });
     setPositions(prev => [...prev, newPos]);
     setTab("open");
     window.__emitToast?.({
       kind: "open",
       title: `${asset.sym} · ${signal.side === "buy" ? "ЛОНГ" : "ШОРТ"} по сигналу`,
-      body: `Открыта демо-позиция ${form.amount}$ по ${price.toFixed(2)} · TP ${newPos.tp.toFixed(2)} / SL ${newPos.sl.toFixed(2)}`,
-      meta: `источник: ${signal.id} · ${signal.agent}`,
+      body: `Маржа ${newPos.margin}$ × ${newPos.lev}x = ${newPos.size}$ по ${price.toFixed(2)} · TP ${newPos.tp.toFixed(2)} / SL ${newPos.sl.toFixed(2)}`,
+      meta: `${signal.id} · ${signal.agent}${newPos.liq ? ` · ликв. ${newPos.liq.toFixed(newPos.liq < 10 ? 4 : 2)}` : ""}`,
     });
+  }
+
+  /* A leveraged demo position: margin × leverage = notional size.
+   * Liquidation ≈ entry ∓ entry/lev (simplified — no fees / maintenance margin). */
+  function makePosition({ side, price, sl, tp, signalId }) {
+    const margin = form.amount;
+    const lev = Math.max(1, +form.lev || 1);
+    const size = margin * lev;
+    const liq = lev > 1
+      ? (side === "buy" ? price * (1 - 1 / lev) : price * (1 + 1 / lev))
+      : null;
+    return {
+      id: `P-${Date.now()}`, side, entry: price,
+      margin, lev, size, liq, sl, tp, signalId,
+      openedAt: nowTsHM(), pnl: 0, pnlPct: 0, currentPrice: price,
+    };
   }
 
   function openManual() {
     const price = candles[candles.length - 1].close;
     const slPct = 0.02, tpPct = 0.04;
-    const newPos = {
-      id: `P-${Date.now()}`,
-      side: form.side,
-      entry: price,
-      size: form.amount,
+    const newPos = makePosition({
+      side: form.side, price,
       sl: form.useSlTp ? (form.side === "buy" ? price * (1 - slPct) : price * (1 + slPct)) : null,
       tp: form.useSlTp ? (form.side === "buy" ? price * (1 + tpPct) : price * (1 - tpPct)) : null,
       signalId: null,
-      openedAt: nowTsHM(),
-      pnl: 0, pnlPct: 0, currentPrice: price,
-    };
+    });
     setPositions(prev => [...prev, newPos]);
     setTab("open");
     window.__emitToast?.({
       kind: "open",
       title: `${asset.sym} · ${form.side === "buy" ? "ЛОНГ" : "ШОРТ"} (вручную)`,
-      body: `Открыта демо-позиция ${form.amount}$ по ${price.toFixed(2)}`,
+      body: `Маржа ${newPos.margin}$ × ${newPos.lev}x = позиция ${newPos.size}$ по ${price.toFixed(2)}`,
+      meta: newPos.liq ? `ликвидация ~${newPos.liq.toFixed(newPos.liq < 10 ? 4 : 2)}` : "без плеча",
     });
   }
 
@@ -701,19 +713,20 @@ function CryptoSignalsPanel({ lang }) {
     const pnl = closing.side === "buy"
       ? (exitPrice - closing.entry) * (closing.size / closing.entry)
       : (closing.entry - exitPrice) * (closing.size / closing.entry);
-    const pnlPct = closing.side === "buy"
-      ? (exitPrice - closing.entry) / closing.entry * 100
-      : (closing.entry - exitPrice) / closing.entry * 100;
+    const margin = closing.margin != null ? closing.margin : closing.size;
+    const pnlPct = margin ? (pnl / margin) * 100 : 0;   // ROE on the margin
     // pure state updates (functional — safe when several positions close in one tick)
     setPositions(prev => prev.filter(p => p.id !== id));
     setHistory(prev => [{ ...closing, exitPrice, pnl, pnlPct, closedAt: nowTsHM(), reason }, ...prev].slice(0, 24));
     // side effect outside any updater
-    const reasonLabel = reason === "tp" ? "Take Profit" : reason === "sl" ? "Stop Loss" : "ручное закрытие";
+    const reasonLabel = reason === "tp" ? "Take Profit" : reason === "sl" ? "Stop Loss"
+      : reason === "liq" ? "ЛИКВИДАЦИЯ" : "ручное закрытие";
+    const dec = exitPrice < 10 ? 4 : 2;
     window.__emitToast?.({
-      kind: reason === "tp" ? "win" : reason === "sl" ? "loss" : "close",
+      kind: reason === "tp" ? "win" : (reason === "sl" || reason === "liq") ? "loss" : "close",
       title: `${asset.sym} · позиция закрыта · ${reasonLabel}`,
-      body: `${closing.side === "buy" ? "ЛОНГ" : "ШОРТ"} ${closing.size}$ · вход ${closing.entry.toFixed(2)} → выход ${exitPrice.toFixed(2)}`,
-      meta: `P&L: ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}$ (${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}%)`,
+      body: `${closing.side === "buy" ? "ЛОНГ" : "ШОРТ"} ${closing.size}$${closing.lev > 1 ? ` (${closing.lev}x)` : ""} · вход ${closing.entry.toFixed(dec)} → выход ${exitPrice.toFixed(dec)}`,
+      meta: `P&L: ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}$ · ROE ${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(1)}%`,
     });
   }
 
@@ -879,7 +892,7 @@ function CryptoSignalsPanel({ lang }) {
         {/* Right: signal + trade form */}
         <div style={{ borderLeft: "1px solid var(--line)", display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
           <ActiveSignalCard signal={activeSignal} read={currentRead} onOpen={openFromSignal} flash={pendingFlash === activeSignal?.id} />
-          <DemoTradeForm form={form} setForm={setForm} onSubmit={openManual} price={priceNow} />
+          <DemoTradeForm form={form} setForm={setForm} onSubmit={openManual} price={priceNow} maxLev={asset.maxLev || 100} />
         </div>
       </div>
 
@@ -1290,7 +1303,14 @@ function ActiveSignalCard({ signal, read, onOpen, flash }) {
   );
 }
 
-function DemoTradeForm({ form, setForm, onSubmit, price }) {
+function DemoTradeForm({ form, setForm, onSubmit, price, maxLev = 100 }) {
+  const lev = Math.max(1, +form.lev || 1);
+  const notional = (form.amount || 0) * lev;
+  const liq = lev > 1
+    ? (form.side === "buy" ? price * (1 - 1 / lev) : price * (1 + 1 / lev))
+    : null;
+  const LEVS = [1, 2, 5, 10, 25, 50, 100].filter(l => l <= maxLev);
+  const dec = price < 10 ? 4 : 2;
   return (
     <div style={{ padding: "10px 14px", display: "flex", flexDirection: "column", gap: 8, flex: 1 }}>
       <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: "0.15em", fontWeight: 600 }}>
@@ -1305,7 +1325,7 @@ function DemoTradeForm({ form, setForm, onSubmit, price }) {
         </button>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 8, alignItems: "center", fontSize: 11 }}>
-        <span style={{ color: "var(--text-dim)" }}>Размер</span>
+        <span style={{ color: "var(--text-dim)" }}>Маржа</span>
         <input type="number" value={form.amount}
           onChange={e => setForm({ ...form, amount: Math.max(10, +e.target.value || 0) })}
           style={{
@@ -1326,6 +1346,28 @@ function DemoTradeForm({ form, setForm, onSubmit, price }) {
           }}>{v}</button>
         ))}
       </div>
+
+      {/* Leverage */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 11 }}>
+        <span style={{ color: "var(--text-dim)" }}>Плечо</span>
+        <span className="mono" style={{ fontSize: 12, color: lev >= 25 ? "var(--red)" : lev >= 10 ? "var(--amber)" : "var(--accent)", fontWeight: 700 }}>{lev}x</span>
+      </div>
+      <div style={{ display: "flex", gap: 3, fontFamily: "var(--font-mono)", fontSize: 9.5, flexWrap: "wrap" }}>
+        {LEVS.map(l => (
+          <button key={l} onClick={() => setForm({ ...form, lev: l })} style={{
+            flex: 1, minWidth: 30, padding: "3px 2px",
+            background: lev === l ? (l >= 25 ? "oklch(0.65 0.13 35 / 0.16)" : "var(--accent-soft)") : "var(--bg-2)",
+            color: lev === l ? (l >= 25 ? "var(--red)" : "var(--accent)") : "var(--text-dim)",
+            border: `1px solid ${lev === l ? (l >= 25 ? "var(--red)" : "oklch(0.78 0.16 var(--accent-h) / 0.4)") : "var(--line)"}`,
+            borderRadius: 2, cursor: "pointer",
+          }}>{l}x</button>
+        ))}
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--text-dim)" }}>
+        <span>позиция <span style={{ color: "var(--text-bright)" }}>{notional.toLocaleString("en-US")}$</span></span>
+        {liq && <span>ликв. <span style={{ color: "var(--red)" }}>{liq.toFixed(dec)}</span></span>}
+      </div>
+
       <label style={{
         display: "flex", alignItems: "center", gap: 6,
         fontSize: 10.5, color: "var(--text-mid)", cursor: "pointer",
@@ -1360,26 +1402,32 @@ function OpenPositionsTable({ positions, onClose }) {
   }
   return (
     <div>
-      <THead cols={["#", "Тип", "Объём", "Вход", "Цена", "P&L $", "P&L %", ""]} grid="60px 70px 70px 80px 80px 80px 70px 70px" />
+      <THead cols={["Тип", "Маржа", "Плечо", "Позиция", "Вход", "Цена", "Ликв.", "P&L $", "ROE %", ""]}
+        grid="66px 62px 50px 70px 74px 74px 74px 70px 66px 66px" />
       {positions.map(p => {
         const isBuy = p.side === "buy";
         const color = isBuy ? "var(--green)" : "var(--red)";
         const pnlColor = p.pnl >= 0 ? "var(--green)" : "var(--red)";
+        const lev = p.lev || 1;
+        const margin = p.margin != null ? p.margin : p.size;
+        const dec = p.entry < 10 ? 4 : 2;
         return (
           <div key={p.id} style={{
-            display: "grid", gridTemplateColumns: "60px 70px 70px 80px 80px 80px 70px 70px",
+            display: "grid", gridTemplateColumns: "66px 62px 50px 70px 74px 74px 74px 70px 66px 66px",
             alignItems: "center", padding: "5px 12px",
             borderBottom: "1px solid var(--line)",
             fontFamily: "var(--font-mono)", fontSize: 10.5,
             background: p.signalId ? "oklch(0.78 0.16 var(--accent-h) / 0.04)" : "transparent",
           }}>
-            <span style={{ color: "var(--text-dim)" }}>{p.id.slice(2, 8)}</span>
             <span style={{ color, fontWeight: 600 }}>{isBuy ? "▲ ЛОНГ" : "▼ ШОРТ"}</span>
+            <span style={{ color: "var(--text-mid)" }}>{margin}$</span>
+            <span style={{ color: lev >= 25 ? "var(--red)" : lev >= 10 ? "var(--amber)" : "var(--accent)", fontWeight: 600 }}>{lev}x</span>
             <span style={{ color: "var(--text)" }}>{p.size}$</span>
-            <span style={{ color: "var(--text-mid)" }}>{p.entry.toFixed(p.entry < 10 ? 3 : 2)}</span>
-            <span style={{ color: "var(--text-bright)" }}>{p.currentPrice.toFixed(p.currentPrice < 10 ? 3 : 2)}</span>
+            <span style={{ color: "var(--text-mid)" }}>{p.entry.toFixed(dec)}</span>
+            <span style={{ color: "var(--text-bright)" }}>{p.currentPrice.toFixed(dec)}</span>
+            <span style={{ color: p.liq ? "var(--red)" : "var(--text-dim)" }}>{p.liq ? p.liq.toFixed(dec) : "—"}</span>
             <span style={{ color: pnlColor }}>{p.pnl >= 0 ? "+" : ""}{p.pnl.toFixed(2)}</span>
-            <span style={{ color: pnlColor, fontWeight: 600 }}>{p.pnlPct >= 0 ? "+" : ""}{p.pnlPct.toFixed(2)}%</span>
+            <span style={{ color: pnlColor, fontWeight: 600 }}>{p.pnlPct >= 0 ? "+" : ""}{p.pnlPct.toFixed(1)}%</span>
             <button onClick={() => onClose(p.id)} style={{
               padding: "2px 8px",
               background: "var(--bg-2)", border: "1px solid var(--line-bright)",
