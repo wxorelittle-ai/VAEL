@@ -473,6 +473,90 @@ function RealAccountPanel() {
   );
 }
 
+/* ─── My wallets: real on-chain balances from the user's public EVM addresses.
+ * Addresses stored locally; balances/txs via the existing Etherscan integration
+ * (needs a free ETHERSCAN_API_KEY set in Settings). Graceful without it. */
+const WALLETS_LS = "vael.wallets";
+function loadWalletsLS() { try { return JSON.parse(localStorage.getItem(WALLETS_LS) || "[]"); } catch (_) { return []; } }
+function saveWalletsLS(a) { try { localStorage.setItem(WALLETS_LS, JSON.stringify(a)); } catch (_) {} }
+
+function WalletsPanel() {
+  const [wallets, setWallets] = useState(loadWalletsLS);
+  const [input, setInput] = useState("");
+  const [ethPrice, setEthPrice] = useState(null);
+  const hasKey = typeof getApiKey === "function" && !!getApiKey("ETHERSCAN_API_KEY");
+
+  useEffect(() => {
+    let cancelled = false;
+    if (typeof bybitFetchTicker === "function") {
+      bybitFetchTicker("ETHUSDT").then(t => { if (!cancelled) setEthPrice(t.lastPrice); }).catch(() => {});
+    }
+    return () => { cancelled = true; };
+  }, []);
+
+  function add() {
+    const a = input.trim();
+    if (!/^0x[0-9a-fA-F]{40}$/.test(a)) {
+      window.__emitToast?.({ kind: "loss", title: "Неверный адрес", body: "Ожидается EVM-адрес 0x… (40 hex-символов)" });
+      return;
+    }
+    if (wallets.some(w => w.toLowerCase() === a.toLowerCase())) { setInput(""); return; }
+    const next = [...wallets, a]; setWallets(next); saveWalletsLS(next); setInput("");
+  }
+  function remove(a) { const next = wallets.filter(w => w !== a); setWallets(next); saveWalletsLS(next); }
+
+  return (
+    <div className="panel" style={{ flexShrink: 0, marginBottom: "var(--gap)", display: "flex", flexDirection: "column" }}>
+      <PanelHeader title="МОИ КОШЕЛЬКИ · ON-CHAIN"
+        meta={hasKey ? "Etherscan · ETH mainnet · реальный баланс" : "добавьте ETHERSCAN_API_KEY в Настройках"}
+        action={typeof LiveTag === "function" ? <LiveTag status={hasKey ? "live" : "rest"} /> : null} />
+
+      <div style={{ display: "flex", gap: 6, padding: "8px 12px", borderBottom: "1px solid var(--line)" }}>
+        <input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter") add(); }}
+          placeholder="0x… публичный адрес кошелька"
+          style={{ flex: 1, background: "var(--bg-0)", border: "1px solid var(--line-bright)", color: "var(--text-bright)", fontFamily: "var(--font-mono)", fontSize: 11, padding: "5px 8px", borderRadius: 3, outline: "none" }} />
+        <button onClick={add} className="btn btn-accent" style={{ fontSize: 11 }}>+ Добавить</button>
+      </div>
+
+      {!hasKey && (
+        <div style={{ padding: "6px 12px", fontSize: 10.5, color: "var(--amber)", fontFamily: "var(--font-mono)", borderBottom: "1px solid var(--line)" }}>
+          ⚠ Без ключа Etherscan баланс не подтянется. Бесплатный ключ на etherscan.io/apis → вставьте в Настройки → API-ключи → ETHERSCAN_API_KEY.
+        </div>
+      )}
+
+      {wallets.length === 0 ? (
+        <div style={{ padding: "14px 12px", textAlign: "center", color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: 11 }}>
+          Кошельки не добавлены. Вставьте свой публичный адрес — покажем реальный баланс ETH и последнюю активность.
+        </div>
+      ) : (
+        <div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 120px 120px 90px 34px", padding: "5px 14px", background: "var(--bg-2)", fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--text-dim)", letterSpacing: 0.06, textTransform: "uppercase" }}>
+            <span>Адрес</span><span style={{ textAlign: "right" }}>Баланс ETH</span><span style={{ textAlign: "right" }}>≈ USD</span><span style={{ textAlign: "right" }}>Активность</span><span></span>
+          </div>
+          {wallets.map(a => <WalletRow key={a} addr={a} ethPrice={ethPrice} onRemove={() => remove(a)} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WalletRow({ addr, ethPrice, onRemove }) {
+  const w = typeof useEtherscanWallet === "function" ? useEtherscanWallet(addr) : { loading: false, live: false, hasKey: false, balance: null, txs: [] };
+  const bal = w.balance;
+  const usd = (bal != null && ethPrice) ? bal * ethPrice : null;
+  const lastTx = w.txs && w.txs[0];
+  const short = typeof shortHex === "function" ? shortHex(addr) : addr;
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 120px 120px 90px 34px", padding: "6px 14px", borderBottom: "1px solid var(--line)", fontFamily: "var(--font-mono)", fontSize: 11, alignItems: "center" }}>
+      <a href={`https://etherscan.io/address/${addr}`} target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent)", textDecoration: "none" }}>{short}</a>
+      <span style={{ textAlign: "right", color: "var(--text-bright)" }}>{w.loading ? "…" : bal != null ? bal.toFixed(4) : (w.hasKey ? "—" : "0.0000")}</span>
+      <span style={{ textAlign: "right", color: "var(--green)" }}>{usd != null ? `$${usd.toLocaleString("en-US", { maximumFractionDigits: 0 })}` : "—"}</span>
+      <span style={{ textAlign: "right", color: "var(--text-dim)" }}>{lastTx ? (typeof txAge === "function" ? txAge(lastTx.time) : "") + " назад" : (w.live ? "нет tx" : "—")}</span>
+      <button onClick={onRemove} title="убрать кошелёк" style={{ justifySelf: "end", width: 22, height: 20, background: "var(--bg-0)", border: "1px solid var(--line)", color: "var(--text-dim)", cursor: "pointer", borderRadius: 2, fontFamily: "var(--font-mono)" }}>✕</button>
+    </div>
+  );
+}
+
 function PortfolioPage({ lang }) {
   const [period, setPeriod] = useState("30d");
   const [activeTab, setActiveTab] = useState("positions");
@@ -527,6 +611,9 @@ function PortfolioPage({ lang }) {
 
       {/* Real Bybit account (appears only when the backend has a read-only key) */}
       <RealAccountPanel />
+
+      {/* Real on-chain balances from the user's own wallet addresses */}
+      <WalletsPanel />
 
       {/* Big numbers row */}
       <div className="panel" style={{ display: "flex", flexShrink: 0, marginBottom: "var(--gap)" }}>
