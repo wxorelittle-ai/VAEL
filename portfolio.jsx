@@ -557,38 +557,138 @@ function WalletRow({ addr, ethPrice, onRemove }) {
   );
 }
 
+/* ─── Real demo-trading state: the budget you set in Settings + every trade the
+ * terminal actually made (localStorage vael.trades.<symbol>). No seed data. ─── */
+function loadDemoState() {
+  let budget = 10000;
+  try { budget = +localStorage.getItem("vael.budget") || 10000; } catch (_) {}
+  const positions = [], history = [];
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k || k.indexOf("vael.trades.") !== 0) continue;
+      const bybit = k.slice("vael.trades.".length);
+      const v = JSON.parse(localStorage.getItem(k) || "null");
+      if (!v) continue;
+      (v.positions || []).forEach(p => positions.push({ ...p, bybit: p.bybit || bybit, sym: p.sym || bybit.replace("USDT", "") }));
+      (v.history || []).forEach(h => history.push({ ...h, bybit: h.bybit || bybit, sym: h.sym || bybit.replace("USDT", "") }));
+    }
+  } catch (_) {}
+  history.sort((a, b) => (b.closedTs || 0) - (a.closedTs || 0));
+  return { budget, positions, history };
+}
+
+const PF_PERIODS = [
+  { id: "1d",  label: "День",   days: 1 },
+  { id: "7d",  label: "Неделя", days: 7 },
+  { id: "30d", label: "Месяц",  days: 30 },
+  { id: "365d",label: "Год",    days: 365 },
+  { id: "all", label: "Всё",    days: null },
+  { id: "custom", label: "Период…", days: null },
+];
+
+/* Always show cents — a demo P&L of +$0.34 must not vanish into rounding. */
+function pfMoney(n) {
+  const s = Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return `${n < 0 ? "−" : ""}$${s}`;
+}
+
 function PortfolioPage({ lang }) {
   const [period, setPeriod] = useState("30d");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
   const [activeTab, setActiveTab] = useState("positions");
+  const [state, setState] = useState(loadDemoState);
 
-  const equity = useMemo(() => {
-    const days = period === "1d" ? 24 : period === "7d" ? 30 : period === "30d" ? 30 : 90;
-    return genEquity(days, 124000);
-  }, [period]);
+  // re-read whenever the terminal writes a trade or Settings changes the budget
+  useEffect(() => {
+    const sync = () => setState(loadDemoState());
+    window.addEventListener("vael:budget", sync);
+    window.addEventListener("storage", sync);
+    const id = setInterval(sync, 2000);
+    return () => { window.removeEventListener("vael:budget", sync); window.removeEventListener("storage", sync); clearInterval(id); };
+  }, []);
 
-  // ─── live current prices from Bybit (entry stays as cost basis) ───
-  const priceSymbols = useMemo(
-    () => PORTFOLIO_POSITIONS.filter(p => p.side !== "stable").map(p => `${p.sym}USDT`),
-    []
+  const { budget, positions: rawPos, history } = state;
+
+  // live prices for the open positions
+  const symbols = useMemo(() => [...new Set(rawPos.map(p => p.bybit))], [rawPos]);
+  const { prices, status: liveStatus } = useBybitTickers(symbols, 6000);
+
+  const positions = useMemo(() => rawPos.map(p => {
+    const t = prices[p.bybit];
+    const cur = t ? t.lastPrice : (p.currentPrice || p.entry);
+    const pnl = p.side === "buy"
+      ? (cur - p.entry) * (p.size / p.entry)
+      : (p.entry - cur) * (p.size / p.entry);
+    const margin = p.margin != null ? p.margin : p.size;
+    return { ...p, cur, pnl, roe: margin ? pnl / margin * 100 : 0, margin };
+  }), [rawPos, prices]);
+
+  // ─── balance: budget + everything realised; equity adds open PnL ───
+  const realizedAll = history.reduce((s, t) => s + (t.pnl || 0), 0);
+  const balance = budget + realizedAll;
+  const unrealized = positions.reduce((s, p) => s + p.pnl, 0);
+  const equityNow = balance + unrealized;
+  const marginUsed = positions.reduce((s, p) => s + (p.margin || 0), 0);
+  const free = Math.max(0, balance - marginUsed);
+
+  // ─── period slice ───
+  const range = useMemo(() => {
+    const p = PF_PERIODS.find(x => x.id === period);
+    if (period === "custom") {
+      const a = from ? new Date(from + "T00:00:00").getTime() : 0;
+      const b = to ? new Date(to + "T23:59:59").getTime() : Date.now();
+      return [a, b];
+    }
+    if (!p || p.days == null) return [0, Date.now()];
+    return [Date.now() - p.days * 864e5, Date.now()];
+  }, [period, from, to]);
+
+  const inPeriod = useMemo(
+    () => history.filter(t => t.closedTs && t.closedTs >= range[0] && t.closedTs <= range[1]),
+    [history, range]
   );
-  const { prices, status: liveStatus } = useBybitTickers(priceSymbols, 8000);
-  const positions = useMemo(() => PORTFOLIO_POSITIONS.map(p => {
-    if (p.side === "stable") return p;
-    const t = prices[`${p.sym}USDT`];
-    return t ? { ...p, current: t.lastPrice } : p;
-  }), [prices]);
 
-  const total = positions.reduce((s, p) => s + p.size, 0);
-  const unrealized = positions.reduce((s, p) => s + computePnl(p).pnl, 0);
-  const realized = CLOSED_TRADES.reduce((s, t) => s + t.pnl, 0);
-  const winCount = CLOSED_TRADES.filter(t => t.pnl > 0).length;
-  const winRate = (winCount / CLOSED_TRADES.length) * 100;
-  const longCount = positions.filter(p => p.side === "long").length;
-  const shortCount = positions.filter(p => p.side === "short").length;
-  const bestTrade = [...CLOSED_TRADES].sort((a, b) => b.pnlPct - a.pnlPct)[0];
-  const worstTrade = [...CLOSED_TRADES].sort((a, b) => a.pnlPct - b.pnlPct)[0];
-  const sharpe = 1.42;
-  const maxDD = 4.8;
+  // ─── stats for the selected period ───
+  const st = useMemo(() => {
+    const n = inPeriod.length;
+    const wins = inPeriod.filter(t => t.pnl > 0);
+    const losses = inPeriod.filter(t => t.pnl <= 0);
+    const gross = wins.reduce((s, t) => s + t.pnl, 0);
+    const grossLoss = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
+    const realized = inPeriod.reduce((s, t) => s + t.pnl, 0);
+    const sorted = [...inPeriod].sort((a, b) => b.pnl - a.pnl);
+    // equity curve over the period (chronological)
+    const chrono = [...inPeriod].sort((a, b) => (a.closedTs || 0) - (b.closedTs || 0));
+    const startCap = budget + (realizedAll - realized);        // capital at period start
+    let run = startCap;
+    const curve = [{ t: range[0] || (chrono[0] ? chrono[0].closedTs : Date.now()), v: startCap }];
+    let peak = startCap, maxDD = 0;
+    chrono.forEach(t => {
+      run += t.pnl;
+      curve.push({ t: t.closedTs, v: run });
+      peak = Math.max(peak, run);
+      maxDD = Math.max(maxDD, peak > 0 ? (peak - run) / peak * 100 : 0);
+    });
+    // Sharpe over per-trade returns
+    const rets = chrono.map(t => t.pnl / (t.margin != null ? t.margin : t.size || 1));
+    const mean = rets.length ? rets.reduce((s, x) => s + x, 0) / rets.length : 0;
+    const sd = rets.length ? Math.sqrt(rets.reduce((s, x) => s + (x - mean) ** 2, 0) / rets.length) : 0;
+    return {
+      n, wins: wins.length, losses: losses.length,
+      winRate: n ? wins.length / n * 100 : 0,
+      realized, roi: startCap ? realized / startCap * 100 : 0,
+      pf: grossLoss > 0 ? gross / grossLoss : (gross > 0 ? Infinity : 0),
+      best: sorted[0] || null, worst: sorted[sorted.length - 1] || null,
+      avg: n ? realized / n : 0,
+      curve, maxDD,
+      sharpe: sd > 0 ? (mean / sd) * Math.sqrt(Math.max(1, n)) : 0,
+      startCap,
+    };
+  }, [inPeriod, budget, realizedAll, range]);
+
+  const periodLabel = (PF_PERIODS.find(p => p.id === period) || {}).label || "";
 
   return (
     <div data-screen-label="12 Portfolio" style={{
@@ -596,18 +696,29 @@ function PortfolioPage({ lang }) {
       display: "flex", flexDirection: "column",
     }}>
       <PageHeader title={lang === "en" ? "PORTFOLIO" : "ПОРТФЕЛЬ"}
-        sub={`PORTFOLIO MANAGER · ${PORTFOLIO_POSITIONS.length} позиций · ${CLOSED_TRADES.length} закрытых сделок`}
+        sub={`демо-счёт · старт $${budget.toLocaleString("en-US")} (из настроек) · ${positions.length} открытых · ${history.length} закрытых сделок`}
         actions={
           <>
             {typeof LiveTag === "function" && <LiveTag status={liveStatus} />}
-            <button onClick={() => setPeriod("1d")} className={`btn ${period === "1d" ? "btn-accent" : ""}`}>1Д</button>
-            <button onClick={() => setPeriod("7d")} className={`btn ${period === "7d" ? "btn-accent" : ""}`}>7Д</button>
-            <button onClick={() => setPeriod("30d")} className={`btn ${period === "30d" ? "btn-accent" : ""}`}>30Д</button>
-            <button onClick={() => setPeriod("90d")} className={`btn ${period === "90d" ? "btn-accent" : ""}`}>90Д</button>
-            <button className="btn">Экспорт CSV</button>
+            {PF_PERIODS.map(p => (
+              <button key={p.id} onClick={() => setPeriod(p.id)}
+                className={`btn ${period === p.id ? "btn-accent" : ""}`}>{p.label}</button>
+            ))}
           </>
         }
       />
+
+      {period === "custom" && (
+        <div className="panel" style={{ padding: "8px 14px", marginBottom: "var(--gap)", display: "flex", gap: 10, alignItems: "center", flexShrink: 0 }}>
+          <span className="mono" style={{ fontSize: 10.5, color: "var(--text-dim)" }}>период с</span>
+          <input type="date" value={from} onChange={e => setFrom(e.target.value)} style={pfDateStyle} />
+          <span className="mono" style={{ fontSize: 10.5, color: "var(--text-dim)" }}>по</span>
+          <input type="date" value={to} onChange={e => setTo(e.target.value)} style={pfDateStyle} />
+          <span className="mono" style={{ fontSize: 10, color: "var(--text-dim)", marginLeft: 6 }}>
+            {inPeriod.length} сделок в диапазоне
+          </span>
+        </div>
+      )}
 
       {/* Real Bybit account (appears only when the backend has a read-only key) */}
       <RealAccountPanel />
@@ -615,103 +726,189 @@ function PortfolioPage({ lang }) {
       {/* Real on-chain balances from the user's own wallet addresses */}
       <WalletsPanel />
 
-      {/* Big numbers row */}
-      <div className="panel" style={{ display: "flex", flexShrink: 0, marginBottom: "var(--gap)" }}>
-        <BigPfStat label="ОБЩАЯ СТОИМОСТЬ" v={`$${(total / 1000).toFixed(1)}K`} c="var(--text-bright)"
-          sub={`+${(unrealized + realized > 0 ? unrealized + realized : 0).toFixed(0)}$ за период`} />
-        <BigPfStat label="НЕРЕАЛИЗ. P&L" v={`${unrealized >= 0 ? "+" : ""}$${unrealized.toFixed(0)}`}
+      {/* Balance row — derived from the budget and actual trades */}
+      <div className="panel" style={{ display: "flex", flexShrink: 0, marginBottom: "var(--gap)", flexWrap: "wrap" }}>
+        <BigPfStat label="БАЛАНС" v={pfMoney(balance)} c="var(--text-bright)"
+          sub={`старт $${budget.toLocaleString("en-US")} · реализовано ${realizedAll >= 0 ? "+" : "−"}$${Math.abs(realizedAll).toFixed(2)}`} />
+        <BigPfStat label="ЭКВИТИ (с открытыми)" v={pfMoney(equityNow)}
+          c={equityNow >= budget ? "var(--green)" : "var(--red)"}
+          sub={`${((equityNow - budget) / budget * 100).toFixed(2)}% от старта`} />
+        <BigPfStat label="НЕРЕАЛИЗ. P&L" v={`${unrealized >= 0 ? "+" : "−"}$${Math.abs(unrealized).toFixed(2)}`}
           c={unrealized >= 0 ? "var(--green)" : "var(--red)"}
-          sub={`${PORTFOLIO_POSITIONS.length} открытых позиций`} />
-        <BigPfStat label={`РЕАЛИЗ. P&L · ${period.toUpperCase()}`}
-          v={`${realized >= 0 ? "+" : ""}$${realized}`} c={realized >= 0 ? "var(--green)" : "var(--red)"}
-          sub={`${CLOSED_TRADES.length} закрытых · ${winRate.toFixed(0)}% win rate`} />
-        <BigPfStat label="SHARPE" v={sharpe.toFixed(2)} c="var(--accent)"
-          sub={`MaxDD −${maxDD}%`} />
-        <BigPfStat label="LONG / SHORT" v={`${longCount} / ${shortCount}`} c="var(--text-bright)"
-          sub={`stable: ${PORTFOLIO_POSITIONS.filter(p => p.side === "stable").length}`} />
+          sub={`${positions.length} открытых · маржа $${marginUsed.toLocaleString("en-US")}`} />
+        <BigPfStat label={`P&L · ${periodLabel.toUpperCase()}`}
+          v={`${st.realized >= 0 ? "+" : "−"}$${Math.abs(st.realized).toFixed(2)}`}
+          c={st.realized >= 0 ? "var(--green)" : "var(--red)"}
+          sub={`${st.n} сделок · ${st.winRate.toFixed(0)}% winrate · ROI ${st.roi >= 0 ? "+" : ""}${st.roi.toFixed(2)}%`} />
+        <BigPfStat label="СВОБОДНО" v={pfMoney(free)} c="var(--accent)"
+          sub={`использовано ${balance > 0 ? (marginUsed / balance * 100).toFixed(0) : 0}%`} />
       </div>
 
       {/* Main grid */}
-      <div style={{
-        flex: 1, display: "grid",
-        gridTemplateColumns: "1.6fr 1fr",
-        gridTemplateRows: "1.2fr 1fr",
-        gap: "var(--gap)",
-        minHeight: 0, overflow: "hidden",
-      }}>
-        {/* Equity curve */}
-        <div className="panel" style={{ display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
-          <PanelHeader title={`КРИВАЯ КАПИТАЛА · ${period.toUpperCase()}`}
-            meta="real-time tracking"
+      <div style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr", gap: "var(--gap)", alignItems: "start" }}>
+        {/* Equity curve from real closed trades */}
+        <div className="panel" style={{ display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          <PanelHeader title={`КРИВАЯ КАПИТАЛА · ${periodLabel.toUpperCase()}`}
+            meta={`старт $${Math.round(st.startCap).toLocaleString("en-US")} · по закрытым сделкам`}
             action={
-              <span className="mono" style={{ fontSize: 10, color: "var(--green)" }}>
-                <PulseDot size={4} color="var(--green)" /> +{(unrealized + realized).toFixed(0)}$
+              <span className="mono" style={{ fontSize: 10, color: st.realized >= 0 ? "var(--green)" : "var(--red)" }}>
+                {st.realized >= 0 ? "+" : "−"}${Math.abs(st.realized).toFixed(2)}
               </span>
             }
           />
-          <div style={{ flex: 1, padding: 12, position: "relative", minHeight: 0 }}>
-            <EquityCurveChart curve={equity} period={period} width={800} height={260} />
+          <div style={{ padding: 12 }}>
+            <DemoEquityChart curve={st.curve} start={st.startCap} width={800} height={220} />
           </div>
         </div>
 
-        {/* Allocation */}
-        <div className="panel" style={{ display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
-          <PanelHeader title="РАСПРЕДЕЛЕНИЕ" meta="по активам" />
-          <div className="scroll" style={{ flex: 1, padding: 14, overflowY: "auto" }}>
-            <AllocationDonut positions={positions} size={180} />
+        {/* Period stats */}
+        <div className="panel" style={{ display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          <PanelHeader title={`СТАТИСТИКА · ${periodLabel.toUpperCase()}`} meta={`${st.n} закрытых сделок`} />
+          <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+            <RiskMetric label="Win Rate" v={`${st.winRate.toFixed(1)}%`} bar={st.winRate}
+              c={st.winRate >= 50 ? "var(--green)" : "var(--amber)"} detail={`${st.wins}W / ${st.losses}L`} />
+            <RiskMetric label="Profit Factor" v={st.pf === Infinity ? "∞" : st.pf.toFixed(2)}
+              bar={Math.min(100, st.pf * 33)} c={st.pf >= 1 ? "var(--green)" : "var(--red)"}
+              detail="валовая прибыль / валовый убыток" />
+            <RiskMetric label="Sharpe" v={st.sharpe.toFixed(2)} bar={Math.min(100, Math.abs(st.sharpe) * 33)}
+              c={st.sharpe >= 1 ? "var(--green)" : "var(--amber)"} detail="по доходности сделок" />
+            <RiskMetric label="Max Drawdown" v={`−${st.maxDD.toFixed(1)}%`} bar={Math.min(100, st.maxDD * 4)}
+              c={st.maxDD < 15 ? "var(--green)" : "var(--red)"} detail="макс. просадка капитала" />
+            <RiskMetric label="Средняя сделка" v={`${st.avg >= 0 ? "+" : "−"}$${Math.abs(st.avg).toFixed(2)}`}
+              bar={50} c={st.avg >= 0 ? "var(--green)" : "var(--red)"} detail="P&L на сделку" />
 
-            <div style={{ marginTop: 16 }}>
-              <div style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--text-dim)", letterSpacing: 0.15, fontWeight: 600, marginBottom: 6 }}>
-                ЛУЧШАЯ / ХУДШАЯ СДЕЛКА
+            {st.best && (
+              <div style={{ borderTop: "1px solid var(--line)", paddingTop: 8, display: "flex", flexDirection: "column", gap: 5, fontFamily: "var(--font-mono)", fontSize: 10.5 }}>
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <span style={{ color: "var(--text-dim)" }}>лучшая · {st.best.sym}</span>
+                  <span style={{ color: "var(--green)" }}>+${st.best.pnl.toFixed(2)}</span>
+                </div>
+                {st.worst && (
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ color: "var(--text-dim)" }}>худшая · {st.worst.sym}</span>
+                    <span style={{ color: "var(--red)" }}>{st.worst.pnl >= 0 ? "+" : "−"}${Math.abs(st.worst.pnl).toFixed(2)}</span>
+                  </div>
+                )}
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                <PnlRow trade={bestTrade} label="ЛУЧШАЯ" />
-                <PnlRow trade={worstTrade} label="ХУДШАЯ" />
+            )}
+            {st.n === 0 && (
+              <div style={{ fontSize: 11, color: "var(--text-dim)", fontFamily: "var(--font-mono)", lineHeight: 1.5 }}>
+                За выбранный период закрытых сделок нет. Открой демо-сделку в терминале — статистика появится здесь.
               </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Bottom: positions/trades tabs */}
-        <div className="panel" style={{ display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
-          <div style={{ display: "flex", borderBottom: "1px solid var(--line)", background: "var(--bg-2)" }}>
-            <PfTabBtn active={activeTab === "positions"} onClick={() => setActiveTab("positions")} label="Открытые" count={PORTFOLIO_POSITIONS.length} />
-            <PfTabBtn active={activeTab === "trades"} onClick={() => setActiveTab("trades")} label="Закрытые сделки" count={CLOSED_TRADES.length} />
-            <PfTabBtn active={activeTab === "strategies"} onClick={() => setActiveTab("strategies")} label="Стратегии" count={STRATEGY_PERFORMANCE.length} />
-            <PfTabBtn active={activeTab === "heatmap"} onClick={() => setActiveTab("heatmap")} label="Heatmap" count={null} />
-          </div>
-          <div className="scroll" style={{ flex: 1, overflowY: "auto" }}>
-            {activeTab === "positions" && <PositionsTable positions={positions} />}
-            {activeTab === "trades" && <TradesTable trades={CLOSED_TRADES} />}
-            {activeTab === "strategies" && <StrategyPerformance items={STRATEGY_PERFORMANCE} />}
-            {activeTab === "heatmap" && <AssetHeatmap />}
-          </div>
-        </div>
-
-        {/* Risk panel */}
-        <div className="panel" style={{ display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
-          <PanelHeader title="РИСК · АНАЛИТИКА" meta="institutional metrics" />
-          <div className="scroll" style={{ flex: 1, padding: 12, overflowY: "auto", display: "flex", flexDirection: "column", gap: 10 }}>
-            <RiskMetric label="Sharpe Ratio" v={sharpe.toFixed(2)} bar={sharpe / 3 * 100} c="var(--green)" detail="за период · отлично >1.5" />
-            <RiskMetric label="Max Drawdown" v={`-${maxDD}%`} bar={maxDD * 4} c="var(--amber)" detail="допустимо <15%" />
-            <RiskMetric label="Volatility (σ)" v="2.4σ" bar={48} c="var(--accent)" detail="на baseline 2.0σ" />
-            <RiskMetric label="Win Rate" v={`${winRate.toFixed(1)}%`} bar={winRate} c="var(--green)" detail="всех закрытых сделок" />
-            <RiskMetric label="Profit Factor" v="2.18" bar={72} c="var(--green)" detail="gross profit / gross loss" />
-            <RiskMetric label="Concentration" v="36%" bar={36} c="var(--amber)" detail="макс. позиция в портфеле" />
-
-            <div style={{
-              padding: 10, marginTop: 6,
-              background: "oklch(0.78 0.16 var(--accent-h) / 0.06)",
-              border: "1px solid oklch(0.78 0.16 var(--accent-h) / 0.3)",
-              borderLeft: "3px solid var(--accent)",
-              borderRadius: 3,
-              fontSize: 11, color: "var(--text)", lineHeight: 1.5,
-            }}>
-              <span style={{ color: "var(--accent)", fontWeight: 600 }}>↳ risk.agt:</span> Портфель в зелёной зоне. Sharpe выше benchmark, drawdown в пределах нормы. Концентрация ETH+BTC 68% — рекомендуется диверсификация в Q3.
-            </div>
+            )}
           </div>
         </div>
       </div>
+
+      {/* Positions / trades */}
+      <div className="panel" style={{ display: "flex", flexDirection: "column", overflow: "hidden", marginTop: "var(--gap)" }}>
+        <div style={{ display: "flex", borderBottom: "1px solid var(--line)", background: "var(--bg-2)" }}>
+          <PfTabBtn active={activeTab === "positions"} onClick={() => setActiveTab("positions")} label="Открытые" count={positions.length} />
+          <PfTabBtn active={activeTab === "trades"} onClick={() => setActiveTab("trades")} label={`Закрытые · ${periodLabel}`} count={inPeriod.length} />
+        </div>
+        <div className="scroll" style={{ maxHeight: 340, overflowY: "auto" }}>
+          {activeTab === "positions" && <DemoPositionsTable positions={positions} />}
+          {activeTab === "trades" && <DemoTradesTable trades={inPeriod} />}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const pfDateStyle = {
+  background: "var(--bg-0)", border: "1px solid var(--line-bright)",
+  color: "var(--text-bright)", fontFamily: "var(--font-mono)", fontSize: 11,
+  padding: "4px 8px", borderRadius: 3, outline: "none",
+};
+
+function DemoEquityChart({ curve, start, width = 800, height = 220 }) {
+  if (!curve || curve.length < 2) {
+    return <div style={{ height, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: 11 }}>
+      нет закрытых сделок за период
+    </div>;
+  }
+  const vals = curve.map(p => p.v);
+  const lo = Math.min(...vals, start), hi = Math.max(...vals, start);
+  const pad = (hi - lo) * 0.08 || 1;
+  const min = lo - pad, max = hi + pad, range = max - min;
+  const padT = 10, padB = 10;
+  const stepX = width / (curve.length - 1);
+  const y = v => padT + (1 - (v - min) / range) * (height - padT - padB);
+  const path = curve.map((p, i) => `${i === 0 ? "M" : "L"}${i * stepX},${y(p.v)}`).join(" ");
+  const area = path + ` L${width},${y(min)} L0,${y(min)} Z`;
+  const up = vals[vals.length - 1] >= start;
+  const col = up ? "var(--green)" : "var(--red)";
+  return (
+    <svg width="100%" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" style={{ display: "block", background: "var(--bg-1)", borderRadius: 4 }}>
+      <defs>
+        <linearGradient id="pf-eq" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={col} stopOpacity="0.25" />
+          <stop offset="100%" stopColor={col} stopOpacity="0.02" />
+        </linearGradient>
+      </defs>
+      <line x1={0} y1={y(start)} x2={width} y2={y(start)} stroke="var(--text-dim)" strokeWidth={0.7} strokeDasharray="3 3" opacity={0.6} />
+      <text x={4} y={y(start) - 3} fill="var(--text-dim)" style={{ fontFamily: "var(--font-mono)", fontSize: 9 }}>
+        старт ${Math.round(start).toLocaleString("en-US")}
+      </text>
+      <path d={area} fill="url(#pf-eq)" stroke="none" />
+      <path d={path} fill="none" stroke={col} strokeWidth={1.6} />
+      <circle cx={(curve.length - 1) * stepX} cy={y(vals[vals.length - 1])} r={2.8} fill={col} />
+    </svg>
+  );
+}
+
+function DemoPositionsTable({ positions }) {
+  if (!positions.length) return <EmptyState text="Нет открытых демо-позиций. Открой сделку в терминале." />;
+  const G = "70px 66px 60px 46px 74px 84px 84px 84px 70px";
+  return (
+    <div>
+      <THead cols={["Актив", "Тип", "Маржа", "Плечо", "Позиция", "Вход", "Цена", "P&L $", "ROE %"]} grid={G} />
+      {positions.map(p => {
+        const c = p.pnl >= 0 ? "var(--green)" : "var(--red)";
+        const dec = p.entry < 10 ? 4 : 2;
+        return (
+          <div key={p.id} style={{ display: "grid", gridTemplateColumns: G, alignItems: "center", padding: "6px 12px", borderBottom: "1px solid var(--line)", fontFamily: "var(--font-mono)", fontSize: 10.5 }}>
+            <span style={{ color: "var(--text-bright)", fontWeight: 600 }}>{p.sym}</span>
+            <span style={{ color: p.side === "buy" ? "var(--green)" : "var(--red)", fontWeight: 600 }}>{p.side === "buy" ? "▲ ЛОНГ" : "▼ ШОРТ"}</span>
+            <span style={{ color: "var(--text-mid)" }}>${p.margin}</span>
+            <span style={{ color: (p.lev || 1) >= 10 ? "var(--amber)" : "var(--accent)" }}>{p.lev || 1}x</span>
+            <span style={{ color: "var(--text)" }}>${p.size}</span>
+            <span style={{ color: "var(--text-mid)" }}>{p.entry.toFixed(dec)}</span>
+            <span style={{ color: "var(--text-bright)" }}>{p.cur.toFixed(dec)}</span>
+            <span style={{ color: c }}>{p.pnl >= 0 ? "+" : "−"}${Math.abs(p.pnl).toFixed(2)}</span>
+            <span style={{ color: c, fontWeight: 600 }}>{p.roe >= 0 ? "+" : ""}{p.roe.toFixed(1)}%</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function DemoTradesTable({ trades }) {
+  if (!trades.length) return <EmptyState text="За выбранный период закрытых сделок нет." />;
+  const G = "104px 70px 66px 60px 46px 84px 84px 84px 70px";
+  return (
+    <div>
+      <THead cols={["Закрыта", "Актив", "Тип", "Маржа", "Плечо", "Вход", "Выход", "P&L $", "ROE %"]} grid={G} />
+      {trades.map((t, i) => {
+        const c = t.pnl >= 0 ? "var(--green)" : "var(--red)";
+        const dec = t.entry < 10 ? 4 : 2;
+        const d = t.closedTs ? new Date(t.closedTs) : null;
+        const when = d ? `${String(d.getDate()).padStart(2, "0")}.${String(d.getMonth() + 1).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}` : (t.closedAt || "—");
+        return (
+          <div key={t.id + "-" + i} style={{ display: "grid", gridTemplateColumns: G, alignItems: "center", padding: "6px 12px", borderBottom: "1px solid var(--line)", fontFamily: "var(--font-mono)", fontSize: 10.5 }}>
+            <span style={{ color: "var(--text-dim)" }}>{when}</span>
+            <span style={{ color: "var(--text-bright)", fontWeight: 600 }}>{t.sym}</span>
+            <span style={{ color: t.side === "buy" ? "var(--green)" : "var(--red)", fontWeight: 600 }}>{t.side === "buy" ? "▲ ЛОНГ" : "▼ ШОРТ"}</span>
+            <span style={{ color: "var(--text-mid)" }}>${t.margin != null ? t.margin : t.size}</span>
+            <span style={{ color: "var(--accent)" }}>{t.lev || 1}x</span>
+            <span style={{ color: "var(--text-mid)" }}>{t.entry.toFixed(dec)}</span>
+            <span style={{ color: "var(--text-mid)" }}>{(t.exitPrice ?? 0).toFixed(dec)}</span>
+            <span style={{ color: c }}>{t.pnl >= 0 ? "+" : "−"}${Math.abs(t.pnl).toFixed(2)}</span>
+            <span style={{ color: c, fontWeight: 600 }}>{t.pnlPct >= 0 ? "+" : ""}{(t.pnlPct || 0).toFixed(1)}%</span>
+          </div>
+        );
+      })}
     </div>
   );
 }

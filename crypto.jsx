@@ -920,7 +920,9 @@ function CryptoSignalsPanel({ lang }) {
     return {
       id: `P-${Date.now()}`, side, entry: price,
       margin, lev, size, liq, sl, tp, signalId,
-      openedAt: nowTsHM(), pnl: 0, pnlPct: 0, currentPrice: price,
+      sym: asset.sym, bybit: asset.bybit,
+      openedAt: nowTsHM(), openedTs: Date.now(),   // real timestamp — portfolio needs it
+      pnl: 0, pnlPct: 0, currentPrice: price,
     };
   }
 
@@ -954,7 +956,11 @@ function CryptoSignalsPanel({ lang }) {
     const pnlPct = margin ? (pnl / margin) * 100 : 0;   // ROE on the margin
     // pure state updates (functional — safe when several positions close in one tick)
     setPositions(prev => prev.filter(p => p.id !== id));
-    setHistory(prev => [{ ...closing, exitPrice, pnl, pnlPct, closedAt: nowTsHM(), reason }, ...prev].slice(0, 24));
+    setHistory(prev => [{
+      ...closing, exitPrice, pnl, pnlPct, reason,
+      sym: closing.sym || asset.sym, bybit: closing.bybit || asset.bybit,
+      closedAt: nowTsHM(), closedTs: Date.now(),   // real timestamp — portfolio stats need it
+    }, ...prev].slice(0, 200));
     // side effect outside any updater
     const reasonLabel = reason === "tp" ? "Take Profit" : reason === "sl" ? "Stop Loss"
       : reason === "liq" ? "ЛИКВИДАЦИЯ" : "ручное закрытие";
