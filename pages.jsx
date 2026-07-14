@@ -947,7 +947,72 @@ function SettingsPage({ lang }) {
       />
       <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: "var(--gap)", alignItems: "start" }}>
         <ApiKeysCard />
-        <SystemSectionsCard />
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--gap)" }}>
+          <BudgetCard />
+          <SystemSectionsCard />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* Trading capital — the single source of truth for every position size the
+ * system suggests (margin = budget·risk% / (leverage · stop-distance)). */
+const BUDGET_LS_KEY = "vael.budget";
+function BudgetCard() {
+  const [budget, setBudget] = useState(() => {
+    try { return +localStorage.getItem(BUDGET_LS_KEY) || 10000; } catch (_) { return 10000; }
+  });
+  const [risk, setRisk] = useState(2);
+
+  function apply(v) {
+    const b = Math.max(100, Math.round(v || 0));
+    setBudget(b);
+    try { localStorage.setItem(BUDGET_LS_KEY, String(b)); } catch (_) {}
+    window.dispatchEvent(new CustomEvent("vael:budget"));   // terminal picks it up live
+  }
+
+  return (
+    <div className="panel" style={{ display: "flex", flexDirection: "column" }}>
+      <PanelHeader title="ТОРГОВЫЙ БЮДЖЕТ" meta="от него считаются все размеры позиций" />
+      <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 8, alignItems: "center", fontSize: 12 }}>
+          <span style={{ color: "var(--text-dim)" }}>Капитал</span>
+          <input type="number" value={budget} onChange={e => apply(+e.target.value)}
+            style={{
+              background: "var(--bg-0)", border: "1px solid var(--line-bright)",
+              color: "var(--text-bright)", padding: "7px 10px",
+              fontFamily: "var(--font-mono)", fontSize: 15, outline: "none", borderRadius: 3, textAlign: "right",
+            }} />
+          <span className="mono" style={{ color: "var(--text-dim)" }}>USDT</span>
+        </div>
+
+        <div style={{ display: "flex", gap: 4 }}>
+          {[1000, 5000, 10000, 50000].map(v => (
+            <button key={v} onClick={() => apply(v)} style={{
+              flex: 1, padding: "4px 6px", borderRadius: 3, cursor: "pointer",
+              fontFamily: "var(--font-mono)", fontSize: 10.5,
+              background: budget === v ? "var(--accent-soft)" : "var(--bg-2)",
+              color: budget === v ? "var(--accent)" : "var(--text-dim)",
+              border: `1px solid ${budget === v ? "oklch(0.74 0.075 var(--accent-h) / 0.4)" : "var(--line)"}`,
+            }}>${(v / 1000)}K</button>
+          ))}
+        </div>
+
+        <div style={{ borderTop: "1px solid var(--line)", paddingTop: 10, display: "flex", flexDirection: "column", gap: 5, fontFamily: "var(--font-mono)", fontSize: 10.5, color: "var(--text-dim)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between" }}>
+            <span>риск на сделку ({risk}%)</span>
+            <span style={{ color: "var(--red)" }}>${Math.round(budget * risk / 100).toLocaleString("en-US")}</span>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between" }}>
+            <span>макс. маржа в одну позицию (50%)</span>
+            <span style={{ color: "var(--text-bright)" }}>${Math.round(budget * 0.5).toLocaleString("en-US")}</span>
+          </div>
+        </div>
+
+        <div style={{ fontSize: 10.5, color: "var(--text-mid)", lineHeight: 1.5 }}>
+          <span className="accent">↳ </span>Кнопка «найти точку входа» подбирает стратегию, рекомендует плечо и считает маржу так, чтобы срабатывание стопа стоило ровно {risk}% капитала.
+        </div>
       </div>
     </div>
   );

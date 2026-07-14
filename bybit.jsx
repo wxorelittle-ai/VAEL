@@ -26,6 +26,79 @@ function toBybitSymbol(sym) {
   return String(sym).replace(/[\/\s]/g, "").toUpperCase();
 }
 
+/* ── Timeframes Bybit does NOT serve natively (2m/10m/45m) are rebuilt from a
+ * coarser native base by bucketing on the candle timestamp. ── */
+function aggregateCandles(candles, baseMs, mult) {
+  if (!candles || !candles.length || mult <= 1) return candles || [];
+  const bucketMs = baseMs * mult;
+  const map = new Map();
+  for (const c of candles) {
+    const key = Math.floor(c.start / bucketMs) * bucketMs;
+    const b = map.get(key);
+    if (!b) map.set(key, { start: key, open: c.open, hi: c.hi, lo: c.lo, close: c.close, v: c.v });
+    else { b.hi = Math.max(b.hi, c.hi); b.lo = Math.min(b.lo, c.lo); b.close = c.close; b.v += c.v; }
+  }
+  return [...map.values()].sort((a, b) => a.start - b.start);
+}
+
+/* ── Second-level candles. Bybit has NO sub-minute klines, so there is no history
+ * to fetch — we build them live from the public trade stream. The chart starts
+ * empty and fills as trades arrive. Honest limitation, not a bug. ── */
+function useSecondCandles(symbol, seconds, category = "spot", maxCandles = 400) {
+  const [candles, setCandles] = useState([]);
+  const bufRef = useRef([]);
+
+  useEffect(() => {
+    if (!seconds) return;
+    let cancelled = false, ws = null, pingId = null, reconnectId = null;
+    const bucketMs = seconds * 1000;
+    bufRef.current = [];
+    setCandles([]);
+
+    const push = (price, size, ts) => {
+      const key = Math.floor(ts / bucketMs) * bucketMs;
+      const arr = bufRef.current;
+      const last = arr[arr.length - 1];
+      if (last && last.start === key) {
+        last.hi = Math.max(last.hi, price);
+        last.lo = Math.min(last.lo, price);
+        last.close = price;
+        last.v += size;
+      } else if (!last || key > last.start) {
+        arr.push({ start: key, open: price, hi: price, lo: price, close: price, v: size });
+        if (arr.length > maxCandles) arr.shift();
+      }
+      if (!cancelled) setCandles(arr.slice());
+    };
+
+    function connect() {
+      try { ws = new WebSocket(bybitWsUrl(category)); }
+      catch { reconnectId = setTimeout(connect, 3000); return; }
+      ws.onopen = () => {
+        ws.send(JSON.stringify({ op: "subscribe", args: [`publicTrade.${symbol}`] }));
+        pingId = setInterval(() => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ op: "ping" })); }, 20000);
+      };
+      ws.onmessage = ev => {
+        if (cancelled) return;
+        let msg; try { msg = JSON.parse(ev.data); } catch { return; }
+        if (!msg.topic || msg.topic.indexOf("publicTrade.") !== 0) return;
+        (msg.data || []).forEach(t => push(+t.p, +t.v, +t.T));
+      };
+      ws.onclose = () => { clearInterval(pingId); if (!cancelled) reconnectId = setTimeout(connect, 2500); };
+      ws.onerror = () => { try { ws.close(); } catch (_) {} };
+    }
+    connect();
+
+    return () => {
+      cancelled = true;
+      clearInterval(pingId); clearTimeout(reconnectId);
+      if (ws) { ws.onclose = null; try { ws.close(); } catch (_) {} }
+    };
+  }, [symbol, seconds, category, maxCandles]);
+
+  return candles;
+}
+
 /* ── Leverage-tradable universe: every linear perpetual on Bybit (incl. memecoins),
  * merged with its max leverage. One tickers call + one instruments call. ── */
 async function bybitFetchLeverageUniverse() {
@@ -506,5 +579,6 @@ Object.assign(window, {
   bybitFetchOrderbook, bybitFetchRecentTrades, useBybitOrderbook, useBybitTrades, useBybitL2,
   bybitFetchLinearStats, useBybitLinearStats, bybitFetchLongShort, useBybitLongShort,
   useMarketMetrics, bybitFetchLeverageUniverse,
+  aggregateCandles, useSecondCandles,
   BYBIT_REST, BYBIT_WS_SPOT, BYBIT_WS_LINEAR,
 });

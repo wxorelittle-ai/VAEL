@@ -10,6 +10,34 @@ const CRYPTO_ASSETS = [
   { sym: "AVAX/USDT", bybit: "AVAXUSDT", name: "Avalanche" },
 ];
 
+/* ─── Timeframes.
+ * Bybit klines exist only for 1/3/5/15/30/60/120/240m + D — there are NO
+ * sub-minute klines and no 2/10/45m. So:
+ *   native — served by Bybit as-is
+ *   agg    — rebuilt from a coarser native base (bucketed by timestamp)
+ *   sec    — built live from the public trade stream (no history exists) */
+const MIN = 60000;
+const TF_MAP = {
+  "1s":  { kind: "sec", seconds: 1,  label: "1с" },
+  "5s":  { kind: "sec", seconds: 5,  label: "5с" },
+  "10s": { kind: "sec", seconds: 10, label: "10с" },
+  "15s": { kind: "sec", seconds: 15, label: "15с" },
+  "30s": { kind: "sec", seconds: 30, label: "30с" },
+  "45s": { kind: "sec", seconds: 45, label: "45с" },
+  "1m":  { kind: "native", base: "1",  label: "1м" },
+  "2m":  { kind: "agg", base: "1",  baseMs: MIN,      mult: 2, label: "2м" },
+  "3m":  { kind: "native", base: "3",  label: "3м" },
+  "5m":  { kind: "native", base: "5",  label: "5м" },
+  "10m": { kind: "agg", base: "5",  baseMs: 5 * MIN,  mult: 2, label: "10м" },
+  "15m": { kind: "native", base: "15", label: "15м" },
+  "30m": { kind: "native", base: "30", label: "30м" },
+  "45m": { kind: "agg", base: "15", baseMs: 15 * MIN, mult: 3, label: "45м" },
+  "1h":  { kind: "native", base: "60", label: "1ч" },
+  "4h":  { kind: "native", base: "240", label: "4ч" },
+  "1D":  { kind: "native", base: "D",  label: "1D" },
+};
+const TF_ORDER = ["1s", "5s", "10s", "15s", "30s", "45s", "1m", "2m", "3m", "5m", "10m", "15m", "30m", "45m", "1h", "4h", "1D"];
+
 /* ─── Coin scanner: every leverage-tradable coin on Bybit (linear perpetuals,
  * incl. memecoins). Added coins persist locally and trade in the terminal. ─── */
 const USER_ASSETS_LS = "vael.assets";
@@ -444,7 +472,8 @@ function CryptoSignalsPanel({ lang }) {
   const [userAssets, setUserAssets] = useState(loadUserAssets);   // coins added from the scanner (linear perps)
   const ASSETS = useMemo(() => [...CRYPTO_ASSETS, ...userAssets], [userAssets]);
   const asset = ASSETS[Math.min(assetIdx, ASSETS.length - 1)] || ASSETS[0];
-  const [tf, setTf] = useState("15"); // Bybit interval: 1|5|15|60|240|D
+  const [tf, setTf] = useState("15m");
+  const TFC = TF_MAP[tf] || TF_MAP["15m"];
   const [scanOpen, setScanOpen] = useState(false);
 
   function addAsset(coin) {
@@ -465,11 +494,28 @@ function CryptoSignalsPanel({ lang }) {
   // 1-minute candles keep the chart lively; the agent signal/trade layer runs on top.
   // 15-minute candles: the timeframe where the TA engine shows a real positive
   // edge in backtest (5m was too noisy/negative, 1h too slow). EMA50/MACD/ATR.
-  // 400 candles of history so the chart can be panned back in time (view = 120)
-  const { candles, ticker, status } = useBybitMarket(asset.bybit, tf, 400, asset.category || "spot");
+  /* Candle source depends on the timeframe:
+   *  · native  — Bybit serves it directly (1/3/5/15/30/60/240m, D)
+   *  · agg     — rebuilt from a coarser native base (2/10/45m)
+   *  · sec     — no history exists on Bybit; built live from the trade stream */
+  const cat = asset.category || "spot";
+  const restInterval = TFC.kind === "sec" ? "1" : TFC.base;
+  const restLimit = TFC.kind === "agg" ? Math.min(1000, TFC.mult * 350) : 400;
+  const market = useBybitMarket(asset.bybit, restInterval, restLimit, cat);
+  const secCandles = useSecondCandles(asset.bybit, TFC.kind === "sec" ? TFC.seconds : 0, cat);
+
+  const candles = useMemo(() => {
+    if (TFC.kind === "sec") return secCandles;
+    if (TFC.kind === "agg") return aggregateCandles(market.candles, TFC.baseMs, TFC.mult);
+    return market.candles;
+  }, [TFC, market.candles, secCandles]);
+  const ticker = market.ticker;
+  const status = TFC.kind === "sec" ? (secCandles.length ? "live" : "connecting") : market.status;
+
   const VIEW = 120;
   const [viewOffset, setViewOffset] = useState(0);   // candles back from the live edge
   useEffect(() => { setViewOffset(0); }, [assetIdx, tf]);
+  const dragRef = useRef(null);                      // mouse-drag panning
   const maxOffset = Math.max(0, candles.length - VIEW);
   const off = Math.min(viewOffset, maxOffset);
   const atLive = off === 0;
@@ -486,8 +532,13 @@ function CryptoSignalsPanel({ lang }) {
   const [positions, setPositions] = useState([]);
   const [history, setHistory] = useState([]);
   const [form, setForm] = useState({ side: "buy", amount: 500, lev: 1, useSlTp: true });
-  const [budget, setBudget] = useState(loadBudget);   // your trading capital — sizing is derived from it
-  useEffect(() => { try { localStorage.setItem(BUDGET_LS, String(budget)); } catch (_) {} }, [budget]);
+  // Trading capital — owned by Settings; everything (margin, leverage) is derived from it.
+  const [budget, setBudget] = useState(loadBudget);
+  useEffect(() => {
+    const sync = () => setBudget(loadBudget());
+    window.addEventListener("vael:budget", sync);
+    return () => window.removeEventListener("vael:budget", sync);
+  }, []);
   const [hoveredSignalId, setHoveredSignalId] = useState(null);
   const [tab, setTab] = useState("open"); // 'open' | 'history' | 'signals'
   const [pendingFlash, setPendingFlash] = useState(null); // signal id of flash
@@ -931,17 +982,26 @@ function CryptoSignalsPanel({ lang }) {
         padding: "5px 14px", borderBottom: "1px solid var(--line)", background: "var(--bg-1)",
       }}>
         <span className="mono" style={{ fontSize: 9, color: "var(--text-dim)", marginRight: 4, letterSpacing: 0.08 }}>ТФ</span>
-        {[{ c: "1", l: "1м" }, { c: "5", l: "5м" }, { c: "15", l: "15м" }, { c: "60", l: "1ч" }, { c: "240", l: "4ч" }, { c: "D", l: "1D" }].map(o => {
-          const on = tf === o.c;
+        {TF_ORDER.map(id => {
+          const o = TF_MAP[id], on = tf === id;
+          const isSec = o.kind === "sec";
           return (
-            <button key={o.c} onClick={() => setTf(o.c)} style={{
-              fontFamily: "var(--font-mono)", fontSize: 10, padding: "2px 9px", borderRadius: 2, cursor: "pointer",
-              background: on ? "var(--accent-soft)" : "transparent",
-              color: on ? "var(--accent)" : "var(--text-dim)",
-              border: `1px solid ${on ? "oklch(0.78 0.16 var(--accent-h) / 0.4)" : "var(--line)"}`, letterSpacing: 0.04,
-            }}>{o.l}</button>
+            <button key={id} onClick={() => setTf(id)}
+              title={isSec ? "строится вживую из потока сделок · истории нет" : o.kind === "agg" ? `собран из ${o.base}м свечей` : "нативный таймфрейм Bybit"}
+              style={{
+                fontFamily: "var(--font-mono)", fontSize: 9.5, padding: "2px 7px", borderRadius: 2, cursor: "pointer",
+                background: on ? "var(--accent-soft)" : "transparent",
+                color: on ? "var(--accent)" : isSec ? "var(--text-dim)" : "var(--text-mid)",
+                border: `1px solid ${on ? "oklch(0.74 0.075 var(--accent-h) / 0.45)" : "var(--line)"}`,
+                letterSpacing: 0.04, opacity: isSec && !on ? 0.75 : 1,
+              }}>{o.label}</button>
           );
         })}
+        {TFC.kind === "sec" && (
+          <span className="mono" style={{ fontSize: 9, color: "var(--amber)", marginLeft: 6 }}>
+            ● строится вживую ({candles.length} св) · истории у биржи нет
+          </span>
+        )}
         <button onClick={findEntry} style={{
           marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 600,
           padding: "3px 12px", borderRadius: 3, cursor: "pointer",
@@ -961,10 +1021,22 @@ function CryptoSignalsPanel({ lang }) {
 
       {/* CHART + SIGNAL PANEL */}
       <div style={{ flex: 1, display: "grid", gridTemplateColumns: "1.6fr 0.85fr", minHeight: 0, overflow: "hidden" }}>
-        {/* Chart — scroll wheel pans back through history */}
+        {/* Chart — drag with the mouse to pan through history */}
         <div
-          onWheel={e => { e.preventDefault(); panBy(e.deltaY > 0 ? 6 : -6); }}
-          style={{ position: "relative", minHeight: 0, overflow: "hidden" }}
+          onMouseDown={e => { dragRef.current = { x: e.clientX, off, w: e.currentTarget.clientWidth }; }}
+          onMouseMove={e => {
+            const d = dragRef.current;
+            if (!d) return;
+            const pxPerCandle = Math.max(1, d.w / VIEW);
+            const delta = Math.round((e.clientX - d.x) / pxPerCandle);   // drag right → go back in time
+            setViewOffset(Math.max(0, Math.min(maxOffset, d.off + delta)));
+          }}
+          onMouseUp={() => { dragRef.current = null; }}
+          onMouseLeave={() => { dragRef.current = null; }}
+          style={{
+            position: "relative", minHeight: 0, overflow: "hidden",
+            cursor: dragRef.current ? "grabbing" : "grab", userSelect: "none",
+          }}
         >
           <ChartWithSignals
             candles={viewCandles} signals={signals} positions={positions}
@@ -994,7 +1066,7 @@ function CryptoSignalsPanel({ lang }) {
           <ActiveSignalCard signal={activeSignal} read={currentRead} onOpen={openFromSignal} flash={pendingFlash === activeSignal?.id} />
           {entryPlan && <EntryPlanCard plan={entryPlan} sym={asset.sym} onApply={openManual} onClear={() => setEntryPlan(null)} />}
           <DemoTradeForm form={form} setForm={setForm} onSubmit={openManual} price={priceNow} maxLev={asset.maxLev || 100}
-            budget={budget} setBudget={setBudget} />
+            budget={budget} />
         </div>
       </div>
 
@@ -1405,7 +1477,7 @@ function ActiveSignalCard({ signal, read, onOpen, flash }) {
   );
 }
 
-function DemoTradeForm({ form, setForm, onSubmit, price, maxLev = 100, budget, setBudget }) {
+function DemoTradeForm({ form, setForm, onSubmit, price, maxLev = 100, budget }) {
   const lev = Math.max(1, +form.lev || 1);
   const notional = (form.amount || 0) * lev;
   const liq = lev > 1
@@ -1418,18 +1490,16 @@ function DemoTradeForm({ form, setForm, onSubmit, price, maxLev = 100, budget, s
       <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: "0.15em", fontWeight: 600 }}>
         РУЧНАЯ ДЕМО-СДЕЛКА
       </div>
-      {setBudget && (
-        <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 8, alignItems: "center", fontSize: 11 }}>
-          <span style={{ color: "var(--text-dim)" }} title="Весь торговый капитал — от него считается размер позиции">Бюджет</span>
-          <input type="number" value={budget}
-            onChange={e => setBudget(Math.max(100, +e.target.value || 0))}
-            style={{
-              background: "var(--bg-0)", border: "1px solid var(--line)",
-              color: "var(--text-mid)", padding: "4px 8px", fontFamily: "var(--font-mono)", fontSize: 11,
-              outline: "none", borderRadius: 3, textAlign: "right",
-            }} />
-          <span className="mono" style={{ color: "var(--text-dim)" }}>USDT</span>
-        </div>
+      {budget != null && (
+        <button onClick={() => window.__navTo?.("settings")} title="Изменить бюджет в настройках"
+          style={{
+            display: "flex", justifyContent: "space-between", alignItems: "center",
+            background: "var(--bg-0)", border: "1px dashed var(--line)", borderRadius: 3,
+            padding: "4px 8px", cursor: "pointer", fontFamily: "var(--font-mono)", fontSize: 10,
+          }}>
+          <span style={{ color: "var(--text-dim)" }}>бюджет</span>
+          <span style={{ color: "var(--text-mid)" }}>${budget.toLocaleString("en-US")} <span style={{ color: "var(--text-dim)" }}>· изменить ›</span></span>
+        </button>
       )}
       <div style={{ display: "flex", gap: 4 }}>
         <button onClick={() => setForm({ ...form, side: "buy" })} style={tradeBtnStyle(form.side === "buy", "var(--green)")}>

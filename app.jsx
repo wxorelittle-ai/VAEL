@@ -127,7 +127,7 @@ function App() {
   useEffect(() => {
     const root = document.documentElement;
     const PALETTES = {
-      gold:   ["82", "45"],   // warm muted default — gold + terracotta
+      gold:   ["70", "42"],   // warm muted default — soft bronze + terracotta
       cyan:   ["180", "270"],
       purple: ["278", "292"],
       amber:  ["60", "20"],

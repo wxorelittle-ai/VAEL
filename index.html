@@ -9,9 +9,10 @@
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
   :root {
-    /* VAEL brand — warm muted palette: gold accent (hue 82) + terracotta (45) */
-    --accent-h: 82;
-    --accent-h2: 45;
+    /* VAEL brand — warm muted palette: soft bronze accent (hue 70) + terracotta (42).
+     * Low chroma on purpose: the UI should read warm, not yellow. */
+    --accent-h: 70;
+    --accent-h2: 42;
     /* Neutrals — warm dark (void · abyss · surface · panel · border) */
     --bg-0: #12100B;
     --bg-1: #1A1610;
@@ -23,20 +24,20 @@
     --text-mid: #8C8170;
     --text: #C6BBA6;
     --text-bright: #F1EADB;
-    --accent: oklch(0.76 0.11 var(--accent-h));
-    --accent-soft: oklch(0.76 0.11 var(--accent-h) / 0.14);
-    --accent-dim: oklch(0.60 0.10 var(--accent-h));
-    --accent-2: oklch(0.66 0.12 var(--accent-h2));
+    --accent: oklch(0.74 0.075 var(--accent-h));
+    --accent-soft: oklch(0.74 0.075 var(--accent-h) / 0.12);
+    --accent-dim: oklch(0.58 0.07 var(--accent-h));
+    --accent-2: oklch(0.64 0.10 var(--accent-h2));
     --green: #86B08A;
-    --amber: #E0B24C;
+    --amber: #C79A5B;
     --red:   #CC7357;
     --blue:  #8FA6B8;
     --pad: 12px; --pad-sm: 8px; --gap: 10px;
     --radius: 5px; --radius-lg: 8px;
     --font-ui: "Space Grotesk", -apple-system, BlinkMacSystemFont, sans-serif;
     --font-mono: "JetBrains Mono", "SF Mono", Menlo, monospace;
-    --glow: 0 0 0 1px oklch(0.76 0.11 var(--accent-h) / 0.3);
-    --glow-strong: 0 0 0 1px oklch(0.76 0.11 var(--accent-h) / 0.42), 0 0 16px -6px oklch(0.76 0.11 var(--accent-h) / 0.32);
+    --glow: 0 0 0 1px oklch(0.74 0.075 var(--accent-h) / 0.26);
+    --glow-strong: 0 0 0 1px oklch(0.74 0.075 var(--accent-h) / 0.36), 0 0 14px -6px oklch(0.74 0.075 var(--accent-h) / 0.26);
     --speed: 1;
   }
   [data-glow="off"] { --glow: 0 0 0 1px oklch(0.78 0.16 var(--accent-h) / 0.4); --glow-strong: 0 0 0 1px oklch(0.78 0.16 var(--accent-h) / 0.6); }
