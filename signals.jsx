@@ -739,9 +739,71 @@ function monteCarloForecast(candles, horizon = 24, sims = 400) {
   };
 }
 
+/* ─────────────────────────────────────────────────────────
+ * Pair trading (statistical arbitrage) — cointegration-style analysis of two
+ * assets. Computes return correlation, an OLS hedge ratio (beta), the log-price
+ * spread, its rolling z-score, and the mean-reversion half-life. A high |z| means
+ * the spread is stretched → trade the convergence. Own implementation.
+ * ────────────────────────────────────────────────────────*/
+function pairAnalysis(candlesA, candlesB, window = 50) {
+  if (!candlesA || !candlesB) return null;
+  const n = Math.min(candlesA.length, candlesB.length);
+  if (n < window + 5) return null;
+  const A = candlesA.slice(-n).map(c => c.close);
+  const B = candlesB.slice(-n).map(c => c.close);
+  const mean = a => a.reduce((s, x) => s + x, 0) / a.length;
+
+  // return correlation
+  const rA = [], rB = [];
+  for (let i = 1; i < n; i++) { rA.push(Math.log(A[i] / A[i - 1])); rB.push(Math.log(B[i] / B[i - 1])); }
+  const mA = mean(rA), mB = mean(rB);
+  let cov = 0, vA = 0, vB = 0;
+  for (let i = 0; i < rA.length; i++) { cov += (rA[i] - mA) * (rB[i] - mB); vA += (rA[i] - mA) ** 2; vB += (rB[i] - mB) ** 2; }
+  const corr = (vA > 0 && vB > 0) ? cov / Math.sqrt(vA * vB) : 0;
+
+  // OLS hedge ratio on log prices: logA = alpha + beta·logB
+  const lA = A.map(Math.log), lB = B.map(Math.log);
+  const mlA = mean(lA), mlB = mean(lB);
+  let cLB = 0, vLB = 0;
+  for (let i = 0; i < n; i++) { cLB += (lA[i] - mlA) * (lB[i] - mlB); vLB += (lB[i] - mlB) ** 2; }
+  const beta = vLB > 0 ? cLB / vLB : 1;
+
+  // spread + rolling z-score
+  const spread = lA.map((v, i) => v - beta * lB[i]);
+  const zSeries = [];
+  for (let i = 0; i < n; i++) {
+    if (i < window - 1) { zSeries.push(0); continue; }
+    const w = spread.slice(i - window + 1, i + 1);
+    const mw = mean(w);
+    const sw = Math.sqrt(w.reduce((s, x) => s + (x - mw) ** 2, 0) / w.length) || 1e-9;
+    zSeries.push((spread[i] - mw) / sw);
+  }
+  const z = zSeries[n - 1];
+
+  // mean-reversion half-life via AR(1): Δspread = a + b·spread₋₁
+  const ds = [], sl = [];
+  for (let i = 1; i < n; i++) { ds.push(spread[i] - spread[i - 1]); sl.push(spread[i - 1]); }
+  const mds = mean(ds), msl = mean(sl);
+  let c2 = 0, v2 = 0;
+  for (let i = 0; i < ds.length; i++) { c2 += (sl[i] - msl) * (ds[i] - mds); v2 += (sl[i] - msl) ** 2; }
+  const b = v2 > 0 ? c2 / v2 : 0;
+  const halfLife = b < 0 ? -Math.log(2) / b : null;
+
+  // signal: enter on |z|≥2, exit near 0
+  let signal = "hold";
+  if (z >= 2) signal = "short_spread";        // spread rich → short A / long B
+  else if (z <= -2) signal = "long_spread";   // spread cheap → long A / short B
+  else if (Math.abs(z) < 0.5) signal = "flat"; // reverted / no edge
+
+  return {
+    n, window, corr, beta, spread, zSeries, z, halfLife, signal,
+    priceA: A[n - 1], priceB: B[n - 1], ratio: A[n - 1] / B[n - 1],
+  };
+}
+
 Object.assign(window, {
   analyzeMarket, taEma, taEmaSeries, taRsi, taMacd, taAtr, agentForSignal,
-  monteCarloForecast,
+  monteCarloForecast, pairAnalysis,
   taVolAnomaly, computeMarketMetrics,
   taSmaSeries, taRsiSeries, taStochRsi, taSupertrend, taDmi, taBollinger,
   taCci, taParabolicSar, taAwesome,

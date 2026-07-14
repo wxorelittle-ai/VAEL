@@ -8,6 +8,7 @@ const NAV_ITEMS = [
   { id: "missions",  ru: "Миссии",      en: "Missions",      glyph: "▶" },
   { id: "scenarios", ru: "Сценарии",    en: "Scenarios",     glyph: "⟁", noEmoji: "⟁" },
   { id: "opps",      ru: "Возможности", en: "Opportunities", glyph: "◈" },
+  { id: "pairs",     ru: "Парный трейдинг", en: "Pair Trading", glyph: "⇄" },
   { id: "airdrops",  ru: "Airdrop радар",en: "Airdrop Radar", glyph: "◇" },
   { id: "freedrops", ru: "Free Airdrops",en: "Free Airdrops", glyph: "❋" },
   { id: "memory",    ru: "Память",      en: "Memory",        glyph: "❖" },
