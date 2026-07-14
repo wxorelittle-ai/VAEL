@@ -421,6 +421,60 @@ function taCmf(candles, period = 20) {
   return vol ? mfv / vol : 0;
 }
 
+/* Ultimate Oscillator(s1,s2,s3) → 0..100. Weighted buying-pressure across three
+ * timeframes; <30 oversold, >70 overbought. Own implementation. */
+function taUltimate(candles, s1 = 7, s2 = 14, s3 = 28) {
+  const n = candles ? candles.length : 0;
+  if (n < s3 + 1) return 50;
+  const bp = [], tr = [];
+  for (let i = 1; i < n; i++) {
+    const c = candles[i], p = candles[i - 1];
+    const minLC = Math.min(c.lo, p.close), maxHC = Math.max(c.hi, p.close);
+    bp.push(c.close - minLC); tr.push(maxHC - minLC);
+  }
+  const sum = (arr, len) => { let s = 0; for (let i = arr.length - len; i < arr.length; i++) s += arr[i]; return s; };
+  const avg = len => { const t = sum(tr, len); return t ? sum(bp, len) / t : 0; };
+  return 100 * (4 * avg(s1) + 2 * avg(s2) + avg(s3)) / 7;
+}
+
+/* Fisher Transform(period) → { value, prev }. Sharpens turning points by mapping
+ * price to a Gaussian; zero-cross / extreme reversals. Own implementation. */
+function taFisher(candles, period = 9) {
+  const n = candles ? candles.length : 0;
+  if (n < period + 1) return { value: 0, prev: 0 };
+  const mp = candles.map(c => (c.hi + c.lo) / 2);
+  let value = 0, fish = 0, fishPrev = 0;
+  for (let i = period - 1; i < n; i++) {
+    let hh = -Infinity, ll = Infinity;
+    for (let j = i - period + 1; j <= i; j++) { if (mp[j] > hh) hh = mp[j]; if (mp[j] < ll) ll = mp[j]; }
+    const range = (hh - ll) || 1e-9;
+    let x = 0.66 * ((mp[i] - ll) / range - 0.5) + 0.67 * value;
+    x = Math.max(-0.999, Math.min(0.999, x));
+    value = x;
+    fishPrev = fish;
+    fish = 0.5 * Math.log((1 + x) / (1 - x)) + 0.5 * fish;
+  }
+  return { value: fish, prev: fishPrev };
+}
+
+/* Elder Ray(period) → { bull, bear }. bull = high−EMA, bear = low−EMA. bull>0 &
+ * rising bear = buyers in control within an uptrend. Own implementation. */
+function taElderRay(candles, period = 13) {
+  const n = candles ? candles.length : 0;
+  if (n < period) return { bull: 0, bear: 0 };
+  const ema = taEma(candles.map(c => c.close), period);
+  return { bull: candles[n - 1].hi - ema, bear: candles[n - 1].lo - ema };
+}
+
+/* Percentage Price Oscillator(fast,slow) → % MACD: (EMAfast−EMAslow)/EMAslow·100.
+ * Scale-independent momentum, comparable across assets. Own implementation. */
+function taPpo(values, fast = 12, slow = 26) {
+  const n = values ? values.length : 0;
+  if (n < slow) return 0;
+  const ef = taEma(values, fast), es = taEma(values, slow);
+  return es ? (ef - es) / es * 100 : 0;
+}
+
 /* Attribute a signal to the agent whose domain drove it (cosmetic, but honest) */
 function agentForSignal(a) {
   const macdTurn = a.macd && ((a.side === "buy" && a.macd.hist > 0 && a.macd.histPrev <= 0) ||
@@ -604,4 +658,5 @@ Object.assign(window, {
   taStochastic, taWilliamsR, taMfi, taIchimoku,
   taKeltner, taDonchian, taObv, taRoc,
   taAroon, taVortex, taTrix, taCmf,
+  taUltimate, taFisher, taElderRay, taPpo,
 });
