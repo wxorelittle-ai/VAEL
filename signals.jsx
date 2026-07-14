@@ -938,9 +938,101 @@ function dailyAgentSim(candles, notional = 1000) {
   };
 }
 
+/* ─────────────────────────────────────────────────────────
+ * Directional projection — the system's actual OPINION on where price goes,
+ * not a symmetric random-walk cone. It fuses everything we have:
+ *   · the TA engine's conviction (score, side, confidence)
+ *   · the matched strategy's take-profit as the destination
+ *   · trend strength (ADX) and Supertrend agreement
+ *   · macro tilt (Fear & Greed from the backend)
+ *   · news sentiment (headline scoring from the backend feed)
+ * Most of the move is front-loaded (impulse decays), candle bodies are sized by
+ * real ATR, and the uncertainty band narrows as confidence rises.
+ * Recompute per candle → it self-corrects against the real move.
+ * ────────────────────────────────────────────────────────*/
+const NEWS_BULL = ["surge", "rally", "soar", "jump", "approval", "approved", "adopt", "etf", "inflow", "bullish", "record high", "breakout", "buy", "upgrade", "partnership"];
+const NEWS_BEAR = ["hack", "exploit", "crash", "plunge", "ban", "sues", "lawsuit", "sec charges", "outflow", "bearish", "dump", "liquidation", "fraud", "selloff", "downgrade"];
+
+function newsSentiment(items) {
+  if (!items || !items.length) return null;
+  let score = 0, n = 0;
+  for (const it of items.slice(0, 30)) {
+    const t = String(it.title || "").toLowerCase();
+    let s = 0;
+    NEWS_BULL.forEach(k => { if (t.includes(k)) s += 1; });
+    NEWS_BEAR.forEach(k => { if (t.includes(k)) s -= 1; });
+    if (s !== 0) { score += Math.max(-1, Math.min(1, s)); n++; }
+  }
+  return n ? Math.max(-1, Math.min(1, score / n)) : 0;
+}
+
+function projectPath(candles, steps = 20, ctx = {}) {
+  if (!candles || candles.length < 60 || typeof analyzeMarket !== "function") return null;
+  const a = analyzeMarket(candles);
+  if (!a) return null;
+  const price = candles[candles.length - 1].close;
+  const atr = a.atr || price * 0.004;
+  const dmi = typeof taDmi === "function" ? taDmi(candles, 14) : { adx: 20 };
+
+  /* conviction: engine score → −1..+1, tempered by confidence and trend strength */
+  let bias = Math.max(-1, Math.min(1, a.score / 4));
+  const confW = a.confidence / 100;                                  // 0.55 … 0.95
+  const trendW = Math.max(0.5, Math.min(1.2, dmi.adx / 25));         // flat market → weaker move
+  const contribs = [{ k: "TA-движок", v: bias }];
+
+  /* macro tilt — Fear & Greed pulls the whole market */
+  if (ctx.fng != null) {
+    const macro = (ctx.fng - 50) / 50;
+    bias = bias * 0.82 + macro * 0.18;
+    contribs.push({ k: "макро (F&G)", v: macro });
+  }
+  /* news tilt — headline sentiment */
+  if (ctx.newsSent != null) {
+    bias = bias * 0.9 + ctx.newsSent * 0.1;
+    contribs.push({ k: "новости", v: ctx.newsSent });
+  }
+  bias = Math.max(-1, Math.min(1, bias));
+
+  /* destination: the strategy's take-profit, reached only as far as conviction allows */
+  const target = a.tp;
+  const totalMove = (target - price) * Math.abs(bias) * confW * trendW;
+
+  /* impulse decay — trends move most right after the trigger, then flatten */
+  const w = [];
+  let wsum = 0;
+  for (let t = 0; t < steps; t++) { const x = Math.exp(-t / (steps * 0.45)); w.push(x); wsum += x; }
+
+  const path = [];
+  let open = price;
+  for (let t = 0; t < steps; t++) {
+    const close = open + totalMove * (w[t] / wsum);
+    const wick = atr * 0.45;
+    path.push({
+      open, close,
+      hi: Math.max(open, close) + wick,
+      lo: Math.min(open, close) - wick,
+      up: close >= open,
+    });
+    open = close;
+  }
+
+  /* uncertainty widens with √t, shrinks as confidence rises */
+  const band = path.map((c, t) => {
+    const s = atr * Math.sqrt(t + 1) * (1.7 - confW);
+    return { hi: c.close + s, lo: c.close - s };
+  });
+
+  return {
+    path, band, price, target, atr, bias, side: a.side,
+    conf: a.confidence, adx: dmi.adx, setup: !!a.setup,
+    expectedPct: (path[path.length - 1].close - price) / price * 100,
+    reasons: a.reasons, contribs,
+  };
+}
+
 Object.assign(window, {
   analyzeMarket, taEma, taEmaSeries, taRsi, taMacd, taAtr, agentForSignal,
-  monteCarloForecast, pairAnalysis, dailyAgentSim,
+  monteCarloForecast, pairAnalysis, dailyAgentSim, projectPath, newsSentiment,
   taVolAnomaly, computeMarketMetrics,
   taSmaSeries, taRsiSeries, taStochRsi, taSupertrend, taDmi, taBollinger,
   taCci, taParabolicSar, taAwesome,

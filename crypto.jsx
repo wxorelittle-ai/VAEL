@@ -259,8 +259,10 @@ function nowTsHM() {
  * Chart with signal markers + position lines
  * ────────────────────────────────────────────────────────*/
 function ChartWithSignals({ candles, signals, positions, hoveredSignalId, onHoverSignal, livePrice, plan, projection, width = 700, height = 280 }) {
-  const proj = (projection && projection.steps && projection.steps.length) ? projection.steps : null;
-  const projVals = proj ? proj.flatMap(s => [s.p5, s.p95]).filter(v => isFinite(v)) : [];
+  const proj = (projection && projection.path && projection.path.length) ? projection.path : null;
+  const projVals = proj
+    ? [...proj.flatMap(c => [c.hi, c.lo]), ...((projection.band || []).flatMap(b => [b.hi, b.lo]))].filter(v => isFinite(v))
+    : [];
   const planVals = plan ? [plan.sl, plan.tp, plan.entry].filter(v => v != null && isFinite(v)) : [];
   const minV = Math.min(...candles.map(c => c.lo), ...planVals, ...projVals);
   const maxV = Math.max(...candles.map(c => c.hi), ...planVals, ...projVals);
@@ -340,41 +342,52 @@ function ChartWithSignals({ candles, signals, positions, hoveredSignalId, onHove
         );
       })}
 
-      {/* ── projection: where the engine thinks price is heading (Monte-Carlo).
-           Faint ghost candles + probability cone, right of the current bar. ── */}
+      {/* ── projection: the system's OPINION on where price goes — TA conviction +
+           strategy target + trend strength, tilted by macro & news. Ghost candles
+           follow that path; the faint band is the uncertainty around it. ── */}
       {proj && candles.length > 0 && (() => {
         const n = candles.length;
         const px = t => (n + t) * stepX + stepX / 2;
         const nowX = (n - 1) * stepX + stepX / 2;
         const nowY = y((livePrice != null && isFinite(livePrice)) ? livePrice : candles[n - 1].close);
-        const band = (hiKey, loKey) => {
-          const top = proj.map((s, t) => `${px(t)},${y(s[hiKey])}`);
-          const bot = proj.map((s, t) => `${px(t)},${y(s[loKey])}`).reverse();
+        const up = projection.expectedPct >= 0;
+        const col = up ? "var(--green)" : "var(--red)";
+        const gw = Math.max(1.2, stepX * 0.6);
+
+        const bandPath = (() => {
+          if (!projection.band) return null;
+          const top = projection.band.map((b, t) => `${px(t)},${y(b.hi)}`);
+          const bot = projection.band.map((b, t) => `${px(t)},${y(b.lo)}`).reverse();
           return `M${nowX},${nowY} L${top.join(" L")} L${bot.join(" L")} Z`;
-        };
-        const median = `M${nowX},${nowY} ` + proj.map((s, t) => `L${px(t)},${y(s.p50)}`).join(" ");
-        const gw = Math.max(1.2, stepX * 0.55);
+        })();
+        const line = `M${nowX},${nowY} ` + proj.map((c, t) => `L${px(t)},${y(c.close)}`).join(" ");
+
         return (
           <g>
-            <path d={band("p95", "p5")} fill="var(--blue)" opacity={0.06} stroke="none" />
-            <path d={band("p75", "p25")} fill="var(--blue)" opacity={0.10} stroke="none" />
-            {proj.map((s, t) => {
-              const prev = t === 0 ? candles[n - 1].close : proj[t - 1].p50;
-              const col = s.p50 >= prev ? "var(--green)" : "var(--red)";
-              const cx = px(t), bTop = y(s.p75), bBot = y(s.p25);
+            {bandPath && <path d={bandPath} fill={col} opacity={0.07} stroke="none" />}
+            {proj.map((c, t) => {
+              const cx = px(t);
+              const cc = c.up ? "var(--green)" : "var(--red)";
+              const bTop = y(Math.max(c.open, c.close)), bBot = y(Math.min(c.open, c.close));
               return (
-                <g key={`pj${t}`} opacity={0.3}>
-                  <line x1={cx} y1={y(s.p95)} x2={cx} y2={y(s.p5)} stroke={col} strokeWidth={0.55} />
-                  <rect x={cx - gw / 2} y={bTop} width={gw} height={Math.max(0.8, bBot - bTop)}
-                    fill="none" stroke={col} strokeWidth={0.8} strokeDasharray="1.5 1.5" />
+                <g key={`pj${t}`} opacity={0.32}>
+                  <line x1={cx} y1={y(c.hi)} x2={cx} y2={y(c.lo)} stroke={cc} strokeWidth={0.55} />
+                  <rect x={cx - gw / 2} y={bTop} width={gw} height={Math.max(0.9, bBot - bTop)}
+                    fill="none" stroke={cc} strokeWidth={0.9} strokeDasharray="1.5 1.5" />
                 </g>
               );
             })}
-            <path d={median} fill="none" stroke="var(--blue)" strokeWidth={1} strokeDasharray="3 3" opacity={0.65} />
+            <path d={line} fill="none" stroke={col} strokeWidth={1} strokeDasharray="3 3" opacity={0.6} />
+            {/* strategy target the path is heading to */}
+            {isFinite(projection.target) && (
+              <line x1={nowX} y1={y(projection.target)} x2={px(proj.length - 1)} y2={y(projection.target)}
+                stroke={col} strokeWidth={0.5} strokeDasharray="1 4" opacity={0.5} />
+            )}
             <line x1={nowX} y1={padTop} x2={nowX} y2={padTop + chartH}
               stroke="var(--line-bright)" strokeWidth={0.6} strokeDasharray="2 3" opacity={0.7} />
-            <text x={px(0)} y={padTop + 9} fontFamily="var(--font-mono)" fontSize={8}
-              fill="var(--blue)" opacity={0.85}>прогноз ∿</text>
+            <text x={px(0)} y={padTop + 9} fontFamily="var(--font-mono)" fontSize={8} fill={col} opacity={0.9}>
+              прогноз {up ? "▲" : "▼"} {projection.expectedPct >= 0 ? "+" : ""}{projection.expectedPct.toFixed(2)}% · conf {projection.conf}%
+            </text>
           </g>
         );
       })()}
@@ -555,28 +568,49 @@ function CryptoSignalsPanel({ lang }) {
   const ticker = market.ticker;
   const status = TFC.kind === "sec" ? (sec.candles.length ? "live" : "connecting") : market.status;
 
-  const VIEW = 120;
-  const [viewOffset, setViewOffset] = useState(0);   // candles back from the live edge
+  // zoom = how many candles fit on screen; pan = how far back from the live edge
+  const [VIEW, setView] = useState(120);
+  const [viewOffset, setViewOffset] = useState(0);
   useEffect(() => { setViewOffset(0); }, [assetIdx, tf]);
   const dragRef = useRef(null);                      // mouse-drag panning
   const maxOffset = Math.max(0, candles.length - VIEW);
   const off = Math.min(viewOffset, maxOffset);
+  const zoomBy = (f) => setView(v => Math.max(30, Math.min(400, Math.round(v * f))));
 
-  /* Forward projection — where the engine thinks price is heading. Monte-Carlo on
-   * the real return distribution; recomputed on every NEW candle, so it corrects
-   * itself as the market actually moves. Drawn as faint "ghost" candles. */
+  /* Forward projection — the system's OPINION on where price goes: TA conviction +
+   * strategy target + trend strength, tilted by macro (Fear&Greed) and news
+   * sentiment from the backend. Recomputed per candle → self-corrects. */
   const [projOn, setProjOn] = useState(true);
+  const [projCtx, setProjCtx] = useState({});     // { fng, newsSent }
   const PROJ_STEPS = 20;
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => Promise.all([
+      fetch("/api/market").then(r => (r.ok ? r.json() : null)).catch(() => null),
+      fetch("/api/news").then(r => (r.ok ? r.json() : null)).catch(() => null),
+    ]).then(([mk, nw]) => {
+      if (cancelled) return;
+      setProjCtx({
+        fng: mk && mk.ok && mk.fng ? mk.fng.value : null,
+        newsSent: (nw && nw.ok && typeof newsSentiment === "function") ? newsSentiment(nw.items) : null,
+      });
+    });
+    load();
+    const id = setInterval(load, 5 * 60 * 1000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+
   const lastStart = candles.length ? candles[candles.length - 1].start : 0;
   const projection = useMemo(() => {
-    if (!projOn || candles.length < 30 || typeof monteCarloForecast !== "function") return null;
-    return monteCarloForecast(candles, PROJ_STEPS, 200);
+    if (!projOn || candles.length < 60 || typeof projectPath !== "function") return null;
+    return projectPath(candles, PROJ_STEPS, projCtx);
     // eslint-disable-next-line
-  }, [projOn, candles.length, lastStart]);
+  }, [projOn, candles.length, lastStart, projCtx]);
   const atLive = off === 0;
   const viewCandles = useMemo(
     () => (candles.length ? candles.slice(Math.max(0, candles.length - VIEW - off), candles.length - off) : []),
-    [candles, off]
+    [candles, off, VIEW]
   );
   const panBy = (n) => setViewOffset(o => Math.max(0, Math.min(maxOffset, o + n)));
   const { orderbook, trades } = useBybitL2(asset.bybit, 50, 40);
@@ -1101,8 +1135,9 @@ function CryptoSignalsPanel({ lang }) {
 
       {/* CHART + SIGNAL PANEL */}
       <div style={{ flex: 1, display: "grid", gridTemplateColumns: "1.6fr 0.85fr", minHeight: 0, overflow: "hidden" }}>
-        {/* Chart — drag with the mouse to pan through history */}
+        {/* Chart — drag to pan, wheel to zoom (TradingView-style) */}
         <div
+          onWheel={e => { e.preventDefault(); zoomBy(e.deltaY > 0 ? 1.15 : 1 / 1.15); }}
           onMouseDown={e => { dragRef.current = { x: e.clientX, off, w: e.currentTarget.clientWidth }; }}
           onMouseMove={e => {
             const d = dragRef.current;
@@ -1136,6 +1171,10 @@ function CryptoSignalsPanel({ lang }) {
             <PanBtn onClick={() => panBy(6)} disabled={off >= maxOffset} title="назад">‹</PanBtn>
             <PanBtn onClick={() => panBy(-6)} disabled={atLive} title="вперёд">›</PanBtn>
             <PanBtn onClick={() => setViewOffset(0)} disabled={atLive} title="к текущему">››|</PanBtn>
+            <span style={{ width: 1, height: 12, background: "var(--line)", margin: "0 2px" }} />
+            <PanBtn onClick={() => zoomBy(1 / 1.3)} disabled={VIEW <= 30} title="приблизить (колесо вверх)">＋</PanBtn>
+            <PanBtn onClick={() => zoomBy(1.3)} disabled={VIEW >= 400} title="отдалить (колесо вниз)">−</PanBtn>
+            <span className="mono" style={{ fontSize: 9, color: "var(--text-dim)" }}>{VIEW}</span>
             <span className="mono" style={{ fontSize: 9, color: atLive ? "var(--green)" : "var(--amber)", marginLeft: 3 }}>
               {atLive ? "LIVE" : `−${off} св`}
             </span>
