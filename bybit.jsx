@@ -17,9 +17,37 @@
 
 const BYBIT_REST = "https://api.bybit.com";
 const BYBIT_WS_SPOT = "wss://stream.bybit.com/v5/public/spot";
+const BYBIT_WS_LINEAR = "wss://stream.bybit.com/v5/public/linear";
+/* Coins added from the scanner are linear perpetuals (leverage-tradable);
+ * the four built-ins stay on spot. Category threads through REST + WS. */
+const bybitWsUrl = (category) => (category === "linear" ? BYBIT_WS_LINEAR : BYBIT_WS_SPOT);
 
 function toBybitSymbol(sym) {
   return String(sym).replace(/[\/\s]/g, "").toUpperCase();
+}
+
+/* ── Leverage-tradable universe: every linear perpetual on Bybit (incl. memecoins),
+ * merged with its max leverage. One tickers call + one instruments call. ── */
+async function bybitFetchLeverageUniverse() {
+  const [tRes, iRes] = await Promise.all([
+    fetch(`${BYBIT_REST}/v5/market/tickers?category=linear`).then(r => r.json()),
+    fetch(`${BYBIT_REST}/v5/market/instruments-info?category=linear&limit=1000`).then(r => r.json()),
+  ]);
+  const tickers = (tRes.result && tRes.result.list) || [];
+  const instr = (iRes.result && iRes.result.list) || [];
+  const levBySym = {};
+  instr.forEach(x => { levBySym[x.symbol] = +(x.leverageFilter && x.leverageFilter.maxLeverage) || null; });
+  return tickers
+    .filter(t => /USDT$/.test(t.symbol))
+    .map(t => ({
+      symbol: t.symbol,
+      base: t.symbol.replace(/USDT$/, ""),
+      price: +t.lastPrice,
+      chg24h: +t.price24hPcnt * 100,
+      turnover24h: +t.turnover24h,
+      maxLev: levBySym[t.symbol] || null,
+    }))
+    .sort((a, b) => b.turnover24h - a.turnover24h);
 }
 
 /* Bybit kline row: [startTime, open, high, low, close, volume, turnover] */
@@ -34,8 +62,8 @@ function parseKlineRow(row) {
   };
 }
 
-async function bybitFetchKlines(symbol, interval = "1", limit = 90) {
-  const url = `${BYBIT_REST}/v5/market/kline?category=spot&symbol=${symbol}&interval=${interval}&limit=${limit}`;
+async function bybitFetchKlines(symbol, interval = "1", limit = 90, category = "spot") {
+  const url = `${BYBIT_REST}/v5/market/kline?category=${category}&symbol=${symbol}&interval=${interval}&limit=${limit}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`kline HTTP ${res.status}`);
   const json = await res.json();
@@ -44,8 +72,8 @@ async function bybitFetchKlines(symbol, interval = "1", limit = 90) {
   return json.result.list.map(parseKlineRow).reverse();
 }
 
-async function bybitFetchTicker(symbol) {
-  const url = `${BYBIT_REST}/v5/market/tickers?category=spot&symbol=${symbol}`;
+async function bybitFetchTicker(symbol, category = "spot") {
+  const url = `${BYBIT_REST}/v5/market/tickers?category=${category}&symbol=${symbol}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`ticker HTTP ${res.status}`);
   const json = await res.json();
@@ -79,7 +107,7 @@ function mergeTicker(prev, d) {
 /* ─────────────────────────────────────────────────────────
  * useBybitMarket — REST bootstrap + live WebSocket for one symbol
  * ────────────────────────────────────────────────────────*/
-function useBybitMarket(symbol, interval = "1", maxCandles = 90) {
+function useBybitMarket(symbol, interval = "1", maxCandles = 90, category = "spot") {
   const [candles, setCandles] = useState([]);
   const [ticker, setTicker] = useState(null);
   const [status, setStatus] = useState("connecting");
@@ -101,8 +129,8 @@ function useBybitMarket(symbol, interval = "1", maxCandles = 90) {
     (async () => {
       try {
         const [kl, tk] = await Promise.all([
-          bybitFetchKlines(symbol, interval, maxCandles),
-          bybitFetchTicker(symbol),
+          bybitFetchKlines(symbol, interval, maxCandles, category),
+          bybitFetchTicker(symbol, category),
         ]);
         if (cancelled) return;
         candlesRef.current = kl;
@@ -139,7 +167,7 @@ function useBybitMarket(symbol, interval = "1", maxCandles = 90) {
     }
 
     function connect() {
-      try { ws = new WebSocket(BYBIT_WS_SPOT); }
+      try { ws = new WebSocket(bybitWsUrl(category)); }
       catch { reconnectId = setTimeout(connect, 3000); return; }
 
       ws.onopen = () => {
@@ -186,8 +214,8 @@ function useBybitMarket(symbol, interval = "1", maxCandles = 90) {
       if (cancelled || Date.now() - lastWsRef.current < 10000) return;
       try {
         const [kl, tk] = await Promise.all([
-          bybitFetchKlines(symbol, interval, maxCandles),
-          bybitFetchTicker(symbol),
+          bybitFetchKlines(symbol, interval, maxCandles, category),
+          bybitFetchTicker(symbol, category),
         ]);
         if (cancelled) return;
         candlesRef.current = kl; setCandles(kl);
@@ -203,7 +231,7 @@ function useBybitMarket(symbol, interval = "1", maxCandles = 90) {
       clearTimeout(reconnectId);
       if (ws) { ws.onclose = null; try { ws.close(); } catch (_) {} }
     };
-  }, [symbol, interval, maxCandles]);
+  }, [symbol, interval, maxCandles, category]);
 
   return { candles, ticker, status };
 }
@@ -477,6 +505,6 @@ Object.assign(window, {
   toBybitSymbol, bybitFetchKlines, bybitFetchTicker, useBybitMarket, useBybitTickers,
   bybitFetchOrderbook, bybitFetchRecentTrades, useBybitOrderbook, useBybitTrades, useBybitL2,
   bybitFetchLinearStats, useBybitLinearStats, bybitFetchLongShort, useBybitLongShort,
-  useMarketMetrics,
-  BYBIT_REST, BYBIT_WS_SPOT,
+  useMarketMetrics, bybitFetchLeverageUniverse,
+  BYBIT_REST, BYBIT_WS_SPOT, BYBIT_WS_LINEAR,
 });

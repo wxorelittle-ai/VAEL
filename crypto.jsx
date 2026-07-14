@@ -10,6 +10,136 @@ const CRYPTO_ASSETS = [
   { sym: "AVAX/USDT", bybit: "AVAXUSDT", name: "Avalanche" },
 ];
 
+/* ─── Coin scanner: every leverage-tradable coin on Bybit (linear perpetuals,
+ * incl. memecoins). Added coins persist locally and trade in the terminal. ─── */
+const USER_ASSETS_LS = "vael.assets";
+function loadUserAssets() { try { return JSON.parse(localStorage.getItem(USER_ASSETS_LS) || "[]"); } catch (_) { return []; } }
+function saveUserAssets(a) { try { localStorage.setItem(USER_ASSETS_LS, JSON.stringify(a)); } catch (_) {} }
+
+/* Bybit doesn't tag memecoins — curated base-symbol list, substring match. */
+const MEME_KEYS = ["DOGE", "SHIB", "PEPE", "WIF", "BONK", "FLOKI", "POPCAT", "MEME", "BRETT", "MOG",
+  "TURBO", "NEIRO", "PNUT", "GOAT", "CHILLGUY", "BABYDOGE", "ELON", "LADYS", "MEW", "SLERF", "BOME",
+  "MYRO", "PONKE", "TRUMP", "MELANIA", "FARTCOIN", "MOODENG", "BANANA", "INU", "WOJAK", "APU", "GIGA",
+  "SPX", "DEGEN", "HIPPO", "SUNDOG", "TOSHI", "MUMU", "CAT"];
+const isMemeCoin = base => MEME_KEYS.some(k => base.includes(k));
+
+function fmtVol(v) {
+  if (!v) return "—";
+  if (v >= 1e9) return `$${(v / 1e9).toFixed(1)}B`;
+  if (v >= 1e6) return `$${(v / 1e6).toFixed(0)}M`;
+  if (v >= 1e3) return `$${(v / 1e3).toFixed(0)}K`;
+  return `$${v.toFixed(0)}`;
+}
+
+function CoinScannerModal({ open, onClose, onAdd, existing }) {
+  const [list, setList] = useState(null);
+  const [q, setQ] = useState("");
+  const [sortBy, setSortBy] = useState("vol");   // vol | chg | lev
+  const [memeOnly, setMemeOnly] = useState(false);
+  const [err, setErr] = useState(false);
+
+  useEffect(() => {
+    if (!open || list) return;
+    if (typeof bybitFetchLeverageUniverse !== "function") { setErr(true); return; }
+    bybitFetchLeverageUniverse().then(setList).catch(() => setErr(true));
+  }, [open, list]);
+
+  useEffect(() => {
+    if (!open) return;
+    const h = e => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [open, onClose]);
+
+  const rows = useMemo(() => {
+    if (!list) return [];
+    const term = q.trim().toUpperCase();
+    let r = list.filter(c => (!term || c.base.includes(term)) && (!memeOnly || isMemeCoin(c.base)));
+    if (sortBy === "chg") r = [...r].sort((a, b) => b.chg24h - a.chg24h);
+    else if (sortBy === "lev") r = [...r].sort((a, b) => (b.maxLev || 0) - (a.maxLev || 0));
+    return r.slice(0, 150);   // list is already volume-sorted from the API layer
+  }, [list, q, sortBy, memeOnly]);
+
+  if (!open) return null;
+  const sortBtn = (id, label) => (
+    <button onClick={() => setSortBy(id)} style={{
+      fontFamily: "var(--font-mono)", fontSize: 10, padding: "3px 9px", borderRadius: 3, cursor: "pointer",
+      background: sortBy === id ? "var(--accent-soft)" : "var(--bg-0)",
+      color: sortBy === id ? "var(--accent)" : "var(--text-dim)",
+      border: `1px solid ${sortBy === id ? "oklch(0.78 0.16 var(--accent-h) / 0.4)" : "var(--line)"}`,
+    }}>{label}</button>
+  );
+
+  return (
+    <div onClick={onClose} style={{
+      position: "fixed", inset: 0, background: "oklch(0 0 0 / 0.6)",
+      backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)", zIndex: 9989,
+      display: "flex", alignItems: "center", justifyContent: "center", animation: "cpFade 0.18s ease-out",
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        width: "min(880px, 95vw)", height: "min(660px, 90vh)", background: "var(--bg-1)",
+        border: "1px solid var(--line-bright)", borderRadius: 8, display: "flex", flexDirection: "column",
+        overflow: "hidden", boxShadow: "0 24px 60px -12px oklch(0 0 0 / 0.7), var(--glow-strong)",
+        animation: "cpScale 0.2s cubic-bezier(0.16,1,0.3,1)",
+      }}>
+        <header style={{ padding: "12px 18px", borderBottom: "1px solid var(--line)", background: "var(--bg-2)", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <div>
+            <div style={{ fontSize: 12, color: "var(--text-bright)", fontWeight: 500 }}>МОНЕТЫ С ПЛЕЧОМ · BYBIT</div>
+            <div className="mono" style={{ fontSize: 9.5, color: "var(--text-dim)" }}>
+              {list ? `${list.length} перпетуалов · мемкоины и альты · торгуются с плечом` : "загрузка списка…"}
+            </div>
+          </div>
+          <input value={q} onChange={e => setQ(e.target.value)} placeholder="поиск: PEPE, WIF, DOGE…"
+            style={{ marginLeft: "auto", width: 190, background: "var(--bg-0)", border: "1px solid var(--line-bright)", color: "var(--text-bright)", fontFamily: "var(--font-mono)", fontSize: 11, padding: "4px 8px", borderRadius: 3, outline: "none" }} />
+          <button onClick={() => setMemeOnly(m => !m)} style={{
+            fontFamily: "var(--font-mono)", fontSize: 10, padding: "3px 9px", borderRadius: 3, cursor: "pointer",
+            background: memeOnly ? "oklch(0.66 0.12 var(--accent-h2) / 0.16)" : "var(--bg-0)",
+            color: memeOnly ? "var(--accent-2)" : "var(--text-dim)",
+            border: `1px solid ${memeOnly ? "var(--accent-2)" : "var(--line)"}`,
+          }}>🐸 мемкоины</button>
+          {sortBtn("vol", "объём")}{sortBtn("chg", "рост")}{sortBtn("lev", "плечо")}
+          <button onClick={onClose} style={{ background: "transparent", border: "none", color: "var(--text-dim)", fontSize: 16, cursor: "pointer" }}>✕</button>
+        </header>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 110px 90px 110px 80px 70px", padding: "5px 16px", background: "var(--bg-2)", borderBottom: "1px solid var(--line)", fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--text-dim)", letterSpacing: 0.06, textTransform: "uppercase" }}>
+          <span>Монета</span><span style={{ textAlign: "right" }}>Цена</span><span style={{ textAlign: "right" }}>24ч</span><span style={{ textAlign: "right" }}>Объём 24ч</span><span style={{ textAlign: "right" }}>Плечо</span><span></span>
+        </div>
+
+        <div className="scroll" style={{ flex: 1, overflowY: "auto" }}>
+          {err ? (
+            <div style={{ padding: 40, textAlign: "center", color: "var(--red)", fontFamily: "var(--font-mono)", fontSize: 12 }}>не удалось загрузить список Bybit</div>
+          ) : !list ? (
+            <div style={{ padding: 40, textAlign: "center", color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: 12 }}>загрузка перпетуалов Bybit…</div>
+          ) : rows.length === 0 ? (
+            <div style={{ padding: 40, textAlign: "center", color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: 12 }}>ничего не найдено</div>
+          ) : rows.map(c => {
+            const added = existing.includes(c.symbol);
+            const meme = isMemeCoin(c.base);
+            return (
+              <div key={c.symbol} style={{ display: "grid", gridTemplateColumns: "1fr 110px 90px 110px 80px 70px", padding: "6px 16px", borderBottom: "1px solid var(--line)", fontFamily: "var(--font-mono)", fontSize: 11, alignItems: "center" }}>
+                <span style={{ color: "var(--text-bright)", fontWeight: 600 }}>
+                  {c.base}{meme && <span style={{ color: "var(--accent-2)", fontSize: 9, marginLeft: 5 }}>meme</span>}
+                </span>
+                <span style={{ textAlign: "right", color: "var(--text-mid)" }}>{c.price < 0.01 ? c.price.toFixed(6) : c.price < 10 ? c.price.toFixed(4) : c.price.toFixed(2)}</span>
+                <span style={{ textAlign: "right", color: c.chg24h >= 0 ? "var(--green)" : "var(--red)", fontWeight: 600 }}>{c.chg24h >= 0 ? "+" : ""}{c.chg24h.toFixed(1)}%</span>
+                <span style={{ textAlign: "right", color: "var(--text-dim)" }}>{fmtVol(c.turnover24h)}</span>
+                <span style={{ textAlign: "right", color: "var(--accent)" }}>{c.maxLev ? `${c.maxLev}x` : "—"}</span>
+                <span style={{ textAlign: "right" }}>
+                  {added ? (
+                    <span style={{ color: "var(--green)", fontSize: 9.5 }}>✓ добавлена</span>
+                  ) : (
+                    <button onClick={() => onAdd(c)} className="btn btn-accent" style={{ fontSize: 10, padding: "2px 8px" }}>+ Добавить</button>
+                  )}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ─────────────────────────────────────────────────────────
  * Reasoning bank
  * ────────────────────────────────────────────────────────*/
@@ -307,14 +437,31 @@ function ChartWithSignals({ candles, signals, positions, hoveredSignalId, onHove
  * ────────────────────────────────────────────────────────*/
 function CryptoSignalsPanel({ lang }) {
   const [assetIdx, setAssetIdx] = useState(0);
-  const asset = CRYPTO_ASSETS[assetIdx];
+  const [userAssets, setUserAssets] = useState(loadUserAssets);   // coins added from the scanner (linear perps)
+  const ASSETS = useMemo(() => [...CRYPTO_ASSETS, ...userAssets], [userAssets]);
+  const asset = ASSETS[Math.min(assetIdx, ASSETS.length - 1)] || ASSETS[0];
   const [tf, setTf] = useState("15"); // Bybit interval: 1|5|15|60|240|D
+  const [scanOpen, setScanOpen] = useState(false);
+
+  function addAsset(coin) {
+    if (ASSETS.some(a => a.bybit === coin.symbol)) return;
+    const next = [...userAssets, { sym: `${coin.base}/USDT`, bybit: coin.symbol, name: coin.base, category: "linear", maxLev: coin.maxLev }];
+    setUserAssets(next); saveUserAssets(next);
+    setAssetIdx(CRYPTO_ASSETS.length + next.length - 1);   // jump to the new coin
+    setScanOpen(false);
+    window.__emitToast?.({ kind: "agent", title: `${coin.base}/USDT добавлена`, body: `Перпетуал Bybit · плечо до ${coin.maxLev || "—"}x`, meta: "торгуется в терминале" });
+  }
+  function removeAsset(bybit) {
+    const next = userAssets.filter(a => a.bybit !== bybit);
+    setUserAssets(next); saveUserAssets(next);
+    setAssetIdx(0);
+  }
 
   // ─── real market data from Bybit (REST history + live WebSocket) ───
   // 1-minute candles keep the chart lively; the agent signal/trade layer runs on top.
   // 15-minute candles: the timeframe where the TA engine shows a real positive
   // edge in backtest (5m was too noisy/negative, 1h too slow). EMA50/MACD/ATR.
-  const { candles, ticker, status } = useBybitMarket(asset.bybit, tf, 120);
+  const { candles, ticker, status } = useBybitMarket(asset.bybit, tf, 120, asset.category || "spot");
   const { orderbook, trades } = useBybitL2(asset.bybit, 50, 40);
   const deriv = useBybitLinearStats(asset.bybit, 15000);
   const longShort = useBybitLongShort(asset.bybit, 60000);
@@ -572,7 +719,7 @@ function CryptoSignalsPanel({ lang }) {
 
   // ─── loading state while Bybit REST history is still in-flight ───
   if (!candles.length) {
-    return <LoadingTerminal asset={asset} status={status} assetIdx={assetIdx} onAsset={setAssetIdx} />;
+    return <LoadingTerminal asset={asset} status={status} assetIdx={assetIdx} onAsset={setAssetIdx} assets={ASSETS} />;
   }
 
   const last = candles[candles.length - 1];
@@ -610,16 +757,35 @@ function CryptoSignalsPanel({ lang }) {
               border: "1px solid oklch(0.7 0.15 240 / 0.45)",
               cursor: "pointer", letterSpacing: 0.06, marginRight: 6,
             }}>∿ MONTE CARLO</button>
-            {CRYPTO_ASSETS.map((a, i) => (
-              <button key={a.sym} onClick={() => setAssetIdx(i)} style={{
-                fontFamily: "var(--font-mono)", fontSize: 9.5,
-                padding: "1px 6px", borderRadius: 2,
-                background: i === assetIdx ? "var(--accent-soft)" : "transparent",
-                color: i === assetIdx ? "var(--accent)" : "var(--text-dim)",
-                border: `1px solid ${i === assetIdx ? "oklch(0.78 0.16 var(--accent-h) / 0.4)" : "var(--line)"}`,
-                cursor: "pointer", letterSpacing: 0.06, textTransform: "uppercase",
-              }}>{a.sym.split("/")[0]}</button>
-            ))}
+            <button onClick={() => setScanOpen(true)} title="Найти монеты с плечом (перпетуалы, мемкоины)" style={{
+              fontFamily: "var(--font-mono)", fontSize: 9.5,
+              padding: "1px 8px", borderRadius: 2,
+              background: "var(--bg-2)", color: "var(--accent-2)",
+              border: "1px solid oklch(0.66 0.12 var(--accent-h2) / 0.5)",
+              cursor: "pointer", letterSpacing: 0.06, marginRight: 6,
+            }}>⌕ МОНЕТЫ</button>
+            {ASSETS.map((a, i) => {
+              const on = i === assetIdx, custom = i >= CRYPTO_ASSETS.length;
+              return (
+                <span key={a.bybit} style={{ display: "inline-flex", alignItems: "center" }}>
+                  <button onClick={() => setAssetIdx(i)} title={custom ? `перпетуал · плечо до ${a.maxLev || "—"}x` : "спот"} style={{
+                    fontFamily: "var(--font-mono)", fontSize: 9.5,
+                    padding: "1px 6px", borderRadius: custom ? "2px 0 0 2px" : 2,
+                    background: on ? "var(--accent-soft)" : "transparent",
+                    color: on ? "var(--accent)" : "var(--text-dim)",
+                    border: `1px solid ${on ? "oklch(0.78 0.16 var(--accent-h) / 0.4)" : "var(--line)"}`,
+                    cursor: "pointer", letterSpacing: 0.06, textTransform: "uppercase",
+                  }}>{a.sym.split("/")[0]}{custom && a.maxLev ? <span style={{ color: "var(--accent-2)", marginLeft: 3 }}>{a.maxLev}x</span> : null}</button>
+                  {custom && (
+                    <button onClick={() => removeAsset(a.bybit)} title="убрать монету" style={{
+                      fontFamily: "var(--font-mono)", fontSize: 9, padding: "1px 3px",
+                      borderRadius: "0 2px 2px 0", background: "transparent", color: "var(--text-dim)",
+                      border: "1px solid var(--line)", borderLeft: "none", cursor: "pointer",
+                    }}>✕</button>
+                  )}
+                </span>
+              );
+            })}
           </div>
         }
       />
@@ -750,6 +916,7 @@ function CryptoSignalsPanel({ lang }) {
 
       <BacktestModal open={backtestOpen} onClose={() => setBacktestOpen(false)} asset={asset.sym} lang={lang} />
       <MonteCarloModal open={mcOpen} onClose={() => setMcOpen(false)} candles={candles} asset={asset} price={priceNow} />
+      <CoinScannerModal open={scanOpen} onClose={() => setScanOpen(false)} onAdd={addAsset} existing={ASSETS.map(a => a.bybit)} />
       <StrategyStudio open={studioOpen} onClose={() => setStudioOpen(false)} asset={asset.sym} lang={lang}
         onSave={(s) => setCustomStrategies(prev => [...prev, s])} />
     </div>
@@ -914,7 +1081,8 @@ function LiveTag({ status }) {
 }
 
 /* Shown while the initial REST history request for a symbol is loading */
-function LoadingTerminal({ asset, status, assetIdx, onAsset }) {
+function LoadingTerminal({ asset, status, assetIdx, onAsset, assets }) {
+  const LIST = assets && assets.length ? assets : CRYPTO_ASSETS;
   const failed = status === "error";
   return (
     <div className="panel" style={{ display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
@@ -922,9 +1090,9 @@ function LoadingTerminal({ asset, status, assetIdx, onAsset }) {
         title={`ТРЕЙДИНГ-ТЕРМИНАЛ · ${asset.sym}`}
         meta={`данные Bybit · ${asset.name}`}
         action={
-          <div style={{ display: "flex", gap: 4 }}>
-            {CRYPTO_ASSETS.map((a, i) => (
-              <button key={a.sym} onClick={() => onAsset(i)} style={{
+          <div style={{ display: "flex", gap: 4, flexWrap: "wrap", justifyContent: "flex-end" }}>
+            {LIST.map((a, i) => (
+              <button key={a.bybit} onClick={() => onAsset(i)} style={{
                 fontFamily: "var(--font-mono)", fontSize: 9.5, padding: "1px 6px", borderRadius: 2,
                 background: i === assetIdx ? "var(--accent-soft)" : "transparent",
                 color: i === assetIdx ? "var(--accent)" : "var(--text-dim)",
