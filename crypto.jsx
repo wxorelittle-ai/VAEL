@@ -258,10 +258,12 @@ function nowTsHM() {
 /* ─────────────────────────────────────────────────────────
  * Chart with signal markers + position lines
  * ────────────────────────────────────────────────────────*/
-function ChartWithSignals({ candles, signals, positions, hoveredSignalId, onHoverSignal, livePrice, plan, width = 700, height = 280 }) {
+function ChartWithSignals({ candles, signals, positions, hoveredSignalId, onHoverSignal, livePrice, plan, projection, width = 700, height = 280 }) {
+  const proj = (projection && projection.steps && projection.steps.length) ? projection.steps : null;
+  const projVals = proj ? proj.flatMap(s => [s.p5, s.p95]).filter(v => isFinite(v)) : [];
   const planVals = plan ? [plan.sl, plan.tp, plan.entry].filter(v => v != null && isFinite(v)) : [];
-  const minV = Math.min(...candles.map(c => c.lo), ...planVals);
-  const maxV = Math.max(...candles.map(c => c.hi), ...planVals);
+  const minV = Math.min(...candles.map(c => c.lo), ...planVals, ...projVals);
+  const maxV = Math.max(...candles.map(c => c.hi), ...planVals, ...projVals);
   const padBottom = 50; // for volume row
   const padTop = 14;
   const padRight = 56; // for price axis
@@ -269,7 +271,9 @@ function ChartWithSignals({ candles, signals, positions, hoveredSignalId, onHove
   const innerW = width - padRight;
   const range = (maxV - minV) * 1.04 || 1;
   const baseY = (maxV - minV) * 0.02 + minV;
-  const stepX = innerW / Math.max(candles.length, 30);
+  // reserve slots on the right for the projection so it doesn't overlap the axis
+  const slots = candles.length + (proj ? proj.length : 0);
+  const stepX = innerW / Math.max(slots, 30);
   const candleW = Math.max(2, stepX * 0.65);
   const y = (v) => padTop + (1 - (v - baseY) / range) * chartH;
   const maxVol = Math.max(...candles.map(c => c.v), 1);
@@ -335,6 +339,45 @@ function ChartWithSignals({ candles, signals, positions, hoveredSignalId, onHove
           </g>
         );
       })}
+
+      {/* ── projection: where the engine thinks price is heading (Monte-Carlo).
+           Faint ghost candles + probability cone, right of the current bar. ── */}
+      {proj && candles.length > 0 && (() => {
+        const n = candles.length;
+        const px = t => (n + t) * stepX + stepX / 2;
+        const nowX = (n - 1) * stepX + stepX / 2;
+        const nowY = y((livePrice != null && isFinite(livePrice)) ? livePrice : candles[n - 1].close);
+        const band = (hiKey, loKey) => {
+          const top = proj.map((s, t) => `${px(t)},${y(s[hiKey])}`);
+          const bot = proj.map((s, t) => `${px(t)},${y(s[loKey])}`).reverse();
+          return `M${nowX},${nowY} L${top.join(" L")} L${bot.join(" L")} Z`;
+        };
+        const median = `M${nowX},${nowY} ` + proj.map((s, t) => `L${px(t)},${y(s.p50)}`).join(" ");
+        const gw = Math.max(1.2, stepX * 0.55);
+        return (
+          <g>
+            <path d={band("p95", "p5")} fill="var(--blue)" opacity={0.06} stroke="none" />
+            <path d={band("p75", "p25")} fill="var(--blue)" opacity={0.10} stroke="none" />
+            {proj.map((s, t) => {
+              const prev = t === 0 ? candles[n - 1].close : proj[t - 1].p50;
+              const col = s.p50 >= prev ? "var(--green)" : "var(--red)";
+              const cx = px(t), bTop = y(s.p75), bBot = y(s.p25);
+              return (
+                <g key={`pj${t}`} opacity={0.3}>
+                  <line x1={cx} y1={y(s.p95)} x2={cx} y2={y(s.p5)} stroke={col} strokeWidth={0.55} />
+                  <rect x={cx - gw / 2} y={bTop} width={gw} height={Math.max(0.8, bBot - bTop)}
+                    fill="none" stroke={col} strokeWidth={0.8} strokeDasharray="1.5 1.5" />
+                </g>
+              );
+            })}
+            <path d={median} fill="none" stroke="var(--blue)" strokeWidth={1} strokeDasharray="3 3" opacity={0.65} />
+            <line x1={nowX} y1={padTop} x2={nowX} y2={padTop + chartH}
+              stroke="var(--line-bright)" strokeWidth={0.6} strokeDasharray="2 3" opacity={0.7} />
+            <text x={px(0)} y={padTop + 9} fontFamily="var(--font-mono)" fontSize={8}
+              fill="var(--blue)" opacity={0.85}>прогноз ∿</text>
+          </g>
+        );
+      })()}
 
       {/* position lines (entry + TP/SL) */}
       {positions.map((p, i) => {
@@ -518,6 +561,18 @@ function CryptoSignalsPanel({ lang }) {
   const dragRef = useRef(null);                      // mouse-drag panning
   const maxOffset = Math.max(0, candles.length - VIEW);
   const off = Math.min(viewOffset, maxOffset);
+
+  /* Forward projection — where the engine thinks price is heading. Monte-Carlo on
+   * the real return distribution; recomputed on every NEW candle, so it corrects
+   * itself as the market actually moves. Drawn as faint "ghost" candles. */
+  const [projOn, setProjOn] = useState(true);
+  const PROJ_STEPS = 20;
+  const lastStart = candles.length ? candles[candles.length - 1].start : 0;
+  const projection = useMemo(() => {
+    if (!projOn || candles.length < 30 || typeof monteCarloForecast !== "function") return null;
+    return monteCarloForecast(candles, PROJ_STEPS, 200);
+    // eslint-disable-next-line
+  }, [projOn, candles.length, lastStart]);
   const atLive = off === 0;
   const viewCandles = useMemo(
     () => (candles.length ? candles.slice(Math.max(0, candles.length - VIEW - off), candles.length - off) : []),
@@ -1004,8 +1059,17 @@ function CryptoSignalsPanel({ lang }) {
               : `● строится вживую (${candles.length} св) · нет на Binance → без истории`}
           </span>
         )}
+        <button onClick={() => setProjOn(p => !p)}
+          title="Проекция: куда стремится цена (Monte-Carlo на реальной волатильности). Корректируется на каждой новой свече."
+          style={{
+            marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 9.5, padding: "2px 9px",
+            borderRadius: 2, cursor: "pointer", marginRight: 6,
+            background: projOn ? "oklch(0.7 0.06 240 / 0.16)" : "transparent",
+            color: projOn ? "var(--blue)" : "var(--text-dim)",
+            border: `1px solid ${projOn ? "var(--blue)" : "var(--line)"}`,
+          }}>∿ ПРОГНОЗ</button>
         <button onClick={findEntry} style={{
-          marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 600,
+          fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 600,
           padding: "3px 12px", borderRadius: 3, cursor: "pointer",
           background: "oklch(0.78 0.16 var(--accent-h) / 0.14)", color: "var(--accent)",
           border: "1px solid oklch(0.78 0.16 var(--accent-h) / 0.5)", letterSpacing: 0.05,
@@ -1045,6 +1109,7 @@ function CryptoSignalsPanel({ lang }) {
             hoveredSignalId={hoveredSignalId}
             onHoverSignal={setHoveredSignalId}
             livePrice={atLive ? priceNow : null} plan={atLive ? entryPlan : null}
+            projection={atLive ? projection : null}
             width={700} height={320}
           />
           {/* pan controls */}
