@@ -9,34 +9,34 @@
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
   :root {
-    /* VAEL brand — Nexus accent (hue 278) + Pulse (292) */
-    --accent-h: 278;
-    --accent-h2: 292;
-    /* Neutrals — void · abyss · surface · panel · border */
-    --bg-0: #0B0B12;
-    --bg-1: #111118;
-    --bg-2: #16161F;
-    --bg-3: #1E1E2E;
-    --line: #2A2A3E;
-    --line-bright: #383852;
-    --text-dim: #55556E;
-    --text-mid: #707088;
-    --text: #B0B0C8;
-    --text-bright: #E8E8F0;
-    --accent: oklch(0.72 0.17 var(--accent-h));
-    --accent-soft: oklch(0.72 0.17 var(--accent-h) / 0.14);
-    --accent-dim: oklch(0.58 0.17 var(--accent-h));
-    --accent-2: oklch(0.76 0.14 var(--accent-h2));
-    --green: #34D399;
-    --amber: #FCD34D;
-    --red:   #F87171;
-    --blue:  #22D3EE;
+    /* VAEL brand — warm muted palette: gold accent (hue 82) + terracotta (45) */
+    --accent-h: 82;
+    --accent-h2: 45;
+    /* Neutrals — warm dark (void · abyss · surface · panel · border) */
+    --bg-0: #12100B;
+    --bg-1: #1A1610;
+    --bg-2: #221D15;
+    --bg-3: #2C261C;
+    --line: #3A3226;
+    --line-bright: #4C4234;
+    --text-dim: #6E6350;
+    --text-mid: #8C8170;
+    --text: #C6BBA6;
+    --text-bright: #F1EADB;
+    --accent: oklch(0.76 0.11 var(--accent-h));
+    --accent-soft: oklch(0.76 0.11 var(--accent-h) / 0.14);
+    --accent-dim: oklch(0.60 0.10 var(--accent-h));
+    --accent-2: oklch(0.66 0.12 var(--accent-h2));
+    --green: #86B08A;
+    --amber: #E0B24C;
+    --red:   #CC7357;
+    --blue:  #8FA6B8;
     --pad: 12px; --pad-sm: 8px; --gap: 10px;
     --radius: 5px; --radius-lg: 8px;
     --font-ui: "Space Grotesk", -apple-system, BlinkMacSystemFont, sans-serif;
     --font-mono: "JetBrains Mono", "SF Mono", Menlo, monospace;
-    --glow: 0 0 0 1px oklch(0.78 0.16 var(--accent-h) / 0.4), 0 0 18px -2px oklch(0.78 0.16 var(--accent-h) / 0.35);
-    --glow-strong: 0 0 0 1px oklch(0.78 0.16 var(--accent-h) / 0.6), 0 0 24px -2px oklch(0.78 0.16 var(--accent-h) / 0.55);
+    --glow: 0 0 0 1px oklch(0.76 0.11 var(--accent-h) / 0.3);
+    --glow-strong: 0 0 0 1px oklch(0.76 0.11 var(--accent-h) / 0.42), 0 0 16px -6px oklch(0.76 0.11 var(--accent-h) / 0.32);
     --speed: 1;
   }
   [data-glow="off"] { --glow: 0 0 0 1px oklch(0.78 0.16 var(--accent-h) / 0.4); --glow-strong: 0 0 0 1px oklch(0.78 0.16 var(--accent-h) / 0.6); }
@@ -55,9 +55,9 @@
   .accent { color: var(--accent); } .green { color: var(--green); } .amber { color: var(--amber); } .red { color: var(--red); } .blue { color: var(--blue); }
   .chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 6px; border-radius: 3px; background: var(--bg-3); border: 1px solid var(--line); font-family: var(--font-mono); font-size: 10px; color: var(--text-mid); letter-spacing: 0.04em; }
   .chip-accent { color: var(--accent); border-color: oklch(0.78 0.16 var(--accent-h) / 0.4); background: var(--accent-soft); }
-  .chip-green { color: var(--green); border-color: oklch(0.78 0.16 155 / 0.4); background: oklch(0.78 0.16 155 / 0.10); }
+  .chip-green { color: var(--green); border-color: oklch(0.72 0.10 150 / 0.4); background: oklch(0.72 0.10 150 / 0.10); }
   .chip-amber { color: var(--amber); border-color: oklch(0.82 0.16 75 / 0.4); background: oklch(0.82 0.16 75 / 0.10); }
-  .chip-red { color: var(--red); border-color: oklch(0.70 0.20 25 / 0.4); background: oklch(0.70 0.20 25 / 0.10); }
+  .chip-red { color: var(--red); border-color: oklch(0.65 0.13 35 / 0.4); background: oklch(0.65 0.13 35 / 0.10); }
   .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; background: currentColor; }
   .pulse { position: relative; }
   .pulse::before { content: ""; position: absolute; inset: -2px; border-radius: 50%; background: currentColor; opacity: 0.4; animation: pulse calc(1.6s / var(--speed)) ease-out infinite; }

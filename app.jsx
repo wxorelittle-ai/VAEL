@@ -72,7 +72,7 @@ function buildInitialMetrics() {
 function App() {
   // tweaks
   const [t, setTweak] = useTweaks(/*EDITMODE-BEGIN*/{
-    "palette": "purple",
+    "palette": "gold",
     "density": "normal",
     "speed": 1,
     "glow": true,
@@ -126,19 +126,16 @@ function App() {
   // ─── apply tweaks to :root ────
   useEffect(() => {
     const root = document.documentElement;
-    if (t.palette === "cyan") {
-      root.style.setProperty("--accent-h", "180");
-      root.style.setProperty("--accent-h2", "270");
-    } else if (t.palette === "purple") {
-      root.style.setProperty("--accent-h", "278");
-      root.style.setProperty("--accent-h2", "292");
-    } else if (t.palette === "amber") {
-      root.style.setProperty("--accent-h", "60");
-      root.style.setProperty("--accent-h2", "20");
-    } else if (t.palette === "green") {
-      root.style.setProperty("--accent-h", "150");
-      root.style.setProperty("--accent-h2", "180");
-    }
+    const PALETTES = {
+      gold:   ["82", "45"],   // warm muted default — gold + terracotta
+      cyan:   ["180", "270"],
+      purple: ["278", "292"],
+      amber:  ["60", "20"],
+      green:  ["150", "180"],
+    };
+    const [ah, ah2] = PALETTES[t.palette] || PALETTES.gold;
+    root.style.setProperty("--accent-h", ah);
+    root.style.setProperty("--accent-h2", ah2);
     root.setAttribute("data-density", t.density);
     root.setAttribute("data-glow", t.glow ? "on" : "off");
     root.style.setProperty("--speed", t.speed);
@@ -264,6 +261,7 @@ function App() {
           <TweakRadio
             label="Акцент" value={t.palette}
             options={[
+              { value: "gold",   label: "Gold" },
               { value: "purple", label: "Nexus" },
               { value: "cyan",   label: "Cyan" },
               { value: "amber",  label: "Янтарь" },

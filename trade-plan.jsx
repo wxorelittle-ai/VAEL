@@ -154,7 +154,7 @@ function TradePlanPage({ lang }) {
           <div className="panel" style={{ padding: 0, overflow: "hidden" }}>
             <PanelHeader title={`ГРАФИК · ${A.sym} · 15m`} meta={`цена ${tpFmt(plan.price)} · EMA50 + Supertrend${p ? " + вход/стоп/цель" : ""}`} />
             <div style={{ padding: 12 }}>
-              <TradePlanChart candles={chartCandles} ema={emaSeries} st={stSeries} plan={p} width={880} height={260} />
+              <TradePlanChart candles={chartCandles} ema={emaSeries} st={stSeries} plan={p} width={820} height={200} />
             </div>
           </div>
 
@@ -246,49 +246,60 @@ function PlanCell({ label, v, c }) {
   );
 }
 
-function TradePlanChart({ candles, ema, st, plan, width = 880, height = 260 }) {
+function TradePlanChart({ candles, ema, st, plan, width = 820, height = 200 }) {
   if (!candles || !candles.length) return null;
   const lows = candles.map(c => c.lo), highs = candles.map(c => c.hi);
   const stVals = st ? st.map(p => p.v).filter(v => isFinite(v) && v > 0) : [];
-  const planVals = plan ? [plan.entry, plan.sl, plan.tp].filter(v => v != null) : [];
-  const min = Math.min(...lows, ...stVals, ...planVals);
-  const max = Math.max(...highs, ...stVals, ...planVals);
-  const range = (max - min) * 1.04 || 1;
-  const padT = 10, padB = 10, padR = 60;
+  const planVals = plan ? [plan.entry, plan.sl, plan.tp].filter(v => v != null && isFinite(v)) : [];
+  const rawMin = Math.min(...lows, ...stVals, ...planVals);
+  const rawMax = Math.max(...highs, ...stVals, ...planVals);
+  const pad = (rawMax - rawMin) * 0.06 || 1;
+  const lo = rawMin - pad, hi = rawMax + pad;
+  const padT = 8, padB = 8, padR = 56;
   const innerW = width - padR;
   const stepX = innerW / candles.length;
-  const candleW = Math.max(2, stepX * 0.6);
-  const y = v => padT + (1 - (v - min) / range) * (height - padT - padB);
+  const candleW = Math.max(1.5, Math.min(8, stepX * 0.62));
+  const y = v => padT + (1 - (v - lo) / (hi - lo)) * (height - padT - padB);
+  const last = candles[candles.length - 1].close;
+  const gridLevels = [0, 0.25, 0.5, 0.75, 1].map(f => lo + (hi - lo) * f);
   const emaPath = ema ? ema.map((v, i) => `${i === 0 ? "M" : "L"}${i * stepX + stepX / 2},${y(v)}`).join(" ") : null;
   const stSegs = [];
   if (st) for (let i = 1; i < st.length; i++) {
     if (!isFinite(st[i].v) || st[i].v <= 0 || !isFinite(st[i - 1].v) || st[i - 1].v <= 0) continue;
     stSegs.push({ x1: (i - 1) * stepX + stepX / 2, y1: y(st[i - 1].v), x2: i * stepX + stepX / 2, y2: y(st[i].v), color: st[i].dir > 0 ? "var(--green)" : "var(--red)" });
   }
-  const planLine = (v, color, label, dash) => v == null ? null : (
+  const tag = (v, color, label, dash) => (v == null || !isFinite(v)) ? null : (
     <g>
-      <line x1={0} y1={y(v)} x2={innerW} y2={y(v)} stroke={color} strokeWidth={0.9} strokeDasharray={dash} opacity={0.85} />
-      <rect x={innerW} y={y(v) - 8} width={padR} height={16} fill={color} />
-      <text x={innerW + padR / 2} y={y(v) + 4} textAnchor="middle" fontFamily="var(--font-mono)" fontSize={9} fontWeight={600} fill="var(--bg-0)">{tpFmt(v)}</text>
-      <text x={4} y={y(v) - 3} fontFamily="var(--font-mono)" fontSize={8.5} fill={color}>{label}</text>
+      <line x1={0} y1={y(v)} x2={innerW} y2={y(v)} stroke={color} strokeWidth={0.8} strokeDasharray={dash} opacity={0.8} />
+      <rect x={innerW} y={y(v) - 7} width={padR} height={14} fill={color} />
+      <text x={innerW + padR / 2} y={y(v) + 3.5} textAnchor="middle" fontFamily="var(--font-mono)" fontSize={8.5} fontWeight={600} fill="var(--bg-0)">{tpFmt(v)}</text>
+      {label && <text x={4} y={y(v) - 3} fontFamily="var(--font-mono)" fontSize={8} fill={color}>{label}</text>}
     </g>
   );
   return (
     <svg width="100%" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" style={{ display: "block", background: "var(--bg-1)", borderRadius: 4 }}>
+      {/* horizontal grid + right price axis */}
+      {gridLevels.map((v, i) => (
+        <g key={`g${i}`}>
+          <line x1={0} y1={y(v)} x2={innerW} y2={y(v)} stroke="var(--line)" strokeWidth={0.5} strokeDasharray="1 4" opacity={0.5} />
+          <text x={innerW + 4} y={y(v) + 3} fontFamily="var(--font-mono)" fontSize={8} fill="var(--text-dim)">{tpFmt(v)}</text>
+        </g>
+      ))}
       {candles.map((c, i) => {
         const cx = i * stepX + stepX / 2, up = c.close >= c.open, color = up ? "var(--green)" : "var(--red)";
         return (
           <g key={i}>
-            <line x1={cx} y1={y(c.hi)} x2={cx} y2={y(c.lo)} stroke={color} strokeWidth={0.7} />
+            <line x1={cx} y1={y(c.hi)} x2={cx} y2={y(c.lo)} stroke={color} strokeWidth={0.6} opacity={0.9} />
             <rect x={cx - candleW / 2} y={y(Math.max(c.open, c.close))} width={candleW} height={Math.max(0.8, Math.abs(y(c.open) - y(c.close)))} fill={up ? "transparent" : color} stroke={color} strokeWidth={0.9} />
           </g>
         );
       })}
-      {emaPath && <path d={emaPath} fill="none" stroke="var(--accent)" strokeWidth={1.2} opacity={0.85} />}
-      {stSegs.map((s, i) => <line key={i} x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2} stroke={s.color} strokeWidth={1.3} opacity={0.9} />)}
-      {plan && planLine(plan.tp, "var(--green)", "TP", "4 3")}
-      {plan && planLine(plan.entry, "var(--accent)", "ВХОД", "0")}
-      {plan && planLine(plan.sl, "var(--red)", "SL", "4 3")}
+      {emaPath && <path d={emaPath} fill="none" stroke="var(--accent)" strokeWidth={1.1} opacity={0.85} />}
+      {stSegs.map((s, i) => <line key={`st${i}`} x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2} stroke={s.color} strokeWidth={1.2} opacity={0.85} />)}
+      {tag(last, "var(--accent)", null, "2 2")}
+      {plan && tag(plan.tp, "var(--green)", "TP", "4 3")}
+      {plan && tag(plan.entry, "var(--accent-2)", plan.side === "buy" ? "▲ ВХОД" : "▼ ВХОД", "0")}
+      {plan && tag(plan.sl, "var(--red)", "SL", "4 3")}
     </svg>
   );
 }
