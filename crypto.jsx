@@ -200,7 +200,7 @@ function makeInitialSignals(candles) {
     const movedPct = ((future - entry) / entry) * 100;
     const success = a.side === "buy" ? movedPct > 0 : movedPct < 0;
     out.push({
-      id: `S-${id++}`, candleIdx: idx, price: entry, side: a.side,
+      id: `S-${id++}`, candleIdx: idx, ts0: candles[idx].start, price: entry, side: a.side,
       confidence: a.confidence, reasoning: a.reasons.join(" · "),
       agent: a.agent, status: success ? "verified" : "failed",
       sl: a.sl, tp: a.tp,
@@ -211,8 +211,9 @@ function makeInitialSignals(candles) {
   // current live setup (if any) becomes the active signal
   const cur = analyzeMarket(candles);
   if (cur && cur.setup) {
+    const last = candles.length - 1;
     out.push({
-      id: `S-${id++}`, candleIdx: candles.length - 2, price: candles[candles.length - 1].close,
+      id: `S-${id++}`, candleIdx: last, ts0: candles[last].start, price: candles[last].close,
       side: cur.side, confidence: cur.confidence, reasoning: cur.reasons.join(" · "),
       agent: cur.agent, status: "active", sl: cur.sl, tp: cur.tp, outcome: 0, ts: nowTsHM(),
     });
@@ -342,8 +343,10 @@ function ChartWithSignals({ candles, signals, positions, hoveredSignalId, onHove
 
       {/* signal markers */}
       {signals.map(s => {
-        if (s.candleIdx >= candles.length) return null;
-        const cx = s.candleIdx * stepX + stepX / 2;
+        // anchor by candle timestamp — the array shifts, so a stored index goes stale
+        const sIdx = s.ts0 != null ? candles.findIndex(c => c.start === s.ts0) : s.candleIdx;
+        if (sIdx < 0 || sIdx >= candles.length) return null;
+        const cx = sIdx * stepX + stepX / 2;
         const cy = y(s.price);
         const isBuy = s.side === "buy";
         const yMarker = isBuy ? cy + 14 : cy - 14;
@@ -513,6 +516,47 @@ function CryptoSignalsPanel({ lang }) {
   // proposed entry is stale when the symbol or timeframe changes
   useEffect(() => { setEntryPlan(null); }, [assetIdx, tf]);
 
+  /* ── Trade bridge: CoPilot (or any panel) asks for a demo trade via a
+   * "vael:opentrade" event { symbol, side }. We switch to that symbol and open
+   * the position as soon as its candles are in — so the button actually trades. */
+  const pendingTradeRef = useRef(null);
+  useEffect(() => {
+    const handler = (e) => {
+      const d = (e && e.detail) || {};
+      const idx = ASSETS.findIndex(a => a.bybit === d.symbol);
+      if (idx < 0) return;
+      pendingTradeRef.current = { symbol: d.symbol, side: d.side };
+      if (idx !== assetIdx) setAssetIdx(idx);
+    };
+    window.addEventListener("vael:opentrade", handler);
+    return () => window.removeEventListener("vael:opentrade", handler);
+  }, [ASSETS, assetIdx]);
+
+  useEffect(() => {
+    const p = pendingTradeRef.current;
+    if (!p || p.symbol !== asset.bybit || !candles.length) return;
+    pendingTradeRef.current = null;
+    const price = candles[candles.length - 1].close;
+    const a = typeof analyzeMarket === "function" ? analyzeMarket(candles) : null;
+    const side = p.side || (a ? a.side : "buy");
+    const useEngine = a && a.side === side;
+    const newPos = makePosition({
+      side, price,
+      sl: useEngine ? a.sl : (side === "buy" ? price * 0.98 : price * 1.02),
+      tp: useEngine ? a.tp : (side === "buy" ? price * 1.04 : price * 0.96),
+      signalId: "copilot",
+    });
+    setPositions(prev => [...prev, newPos]);
+    setTab("open");
+    const dec = price < 10 ? 4 : 2;
+    window.__emitToast?.({
+      kind: "open",
+      title: `${asset.sym} · сделка от CoPilot`,
+      body: `${side === "buy" ? "ЛОНГ" : "ШОРТ"} · маржа ${newPos.margin}$ × ${newPos.lev}x = ${newPos.size}$ по ${price.toFixed(dec)}`,
+      meta: `SL ${newPos.sl.toFixed(dec)} / TP ${newPos.tp.toFixed(dec)}`,
+    });
+  }, [candles, asset.bybit]);
+
   // "Найти точку входа" — read the live setup, draw entry/SL/TP + a 2%-risk size
   function findEntry() {
     if (!candles.length || typeof analyzeMarket !== "function") return;
@@ -603,20 +647,23 @@ function CryptoSignalsPanel({ lang }) {
     const lastPrice = candles[candles.length - 1].close;
     const firstOpen = candles[0].open;
     // verify active signals: if older than 8 candles, mark verified/failed
+    // Verify active signals honestly: anchor the signal to its candle by TIMESTAMP
+    // (the candle array shifts, so a stored index goes stale), and judge it on the
+    // price exactly HORIZON candles later — not on the drifting "current" price.
+    const HORIZON = 6;
     setSignals(prev => prev.map(s => {
       if (s.status !== "active") return s;
-      const agePrice = candles[Math.max(0, s.candleIdx)]?.close ?? s.price;
-      // only verify if the active signal's candle is at least 6 candles back
-      if (candles.length - s.candleIdx >= 6) {
-        const moved = ((lastPrice - s.price) / s.price) * 100;
-        const success = s.side === "buy" ? moved > 0 : moved < 0;
-        return {
-          ...s,
-          status: success ? "verified" : "failed",
-          outcome: s.side === "buy" ? moved : -moved,
-        };
-      }
-      return s;
+      const idx = s.ts0 != null ? candles.findIndex(c => c.start === s.ts0) : s.candleIdx;
+      if (idx < 0) return s;                                   // candle scrolled out of the window
+      if (candles.length - 1 - idx < HORIZON) return s;        // not enough time has passed yet
+      const judgePrice = candles[idx + HORIZON].close;
+      const moved = ((judgePrice - s.price) / s.price) * 100;
+      const success = s.side === "buy" ? moved > 0 : moved < 0;
+      return {
+        ...s,
+        status: success ? "verified" : "failed",
+        outcome: s.side === "buy" ? moved : -moved,
+      };
     }));
 
     // emit a new active signal ONLY when the TA engine finds a genuine setup.
@@ -627,6 +674,7 @@ function CryptoSignalsPanel({ lang }) {
         const newSig = {
           id: `S-${1845 + signals.length}`,
           candleIdx: candles.length - 1,
+          ts0: candles[candles.length - 1].start,
           price: lastPrice,
           side: a.side,
           confidence: a.confidence,

@@ -89,22 +89,6 @@ const INITIAL_SUGGESTIONS = [
     age: 8,
   },
   {
-    id: "sug-005",
-    type: "trade",
-    priority: "medium",
-    title: "SOL · новый AI-сигнал с confidence 89%",
-    body: "Strategy Agent выявил bullish паттерн на SOL (4h таймфрейм): пробой 200 EMA + RSI выход из oversold + позитивный sentiment 0.42σ. Прогноз 4-12ч окно. Recommended size: 1.5-2.5% от капитала.",
-    confidence: 89,
-    sourceAgents: ["strategy.agt", "forecast.agt", "news.agt"],
-    actions: [
-      { id: "act1", label: "Открыть LONG SOL", primary: true, navigate: "dashboard" },
-      { id: "act2", label: "Изучить сигнал", primary: false },
-    ],
-    impact: "+3.5% TP target",
-    relevance: "SOL/USDT",
-    age: 12,
-  },
-  {
     id: "sug-006",
     type: "optimize",
     priority: "low",
@@ -154,21 +138,64 @@ function CoPilot() {
     window.__openCoPilot = () => setOpen(true);
   }, []);
 
+  /* ── Real trade signals from the live TA engine (Bybit candles). These replace
+   * the old invented ones: every suggestion below is an actual analyzeMarket
+   * setup, and its primary action really opens the demo position. ── */
+  const seenSignalRef = useRef(new Set());
+  async function scanForRealSignals() {
+    if (typeof bybitFetchKlines !== "function" || typeof analyzeMarket !== "function") return;
+    const COINS = [
+      { sym: "BTC", bybit: "BTCUSDT" }, { sym: "ETH", bybit: "ETHUSDT" },
+      { sym: "SOL", bybit: "SOLUSDT" }, { sym: "AVAX", bybit: "AVAXUSDT" },
+    ];
+    for (const c of COINS) {
+      try {
+        const kl = await bybitFetchKlines(c.bybit, "15", 120);
+        const a = analyzeMarket(kl);
+        if (!a || !a.setup) continue;
+        const key = `${c.bybit}:${a.side}:${kl[kl.length - 1].start}`;
+        if (seenSignalRef.current.has(key)) continue;
+        seenSignalRef.current.add(key);
+        const price = kl[kl.length - 1].close;
+        const dec = price < 10 ? 4 : 2;
+        const sug = {
+          id: `sug-${c.sym}-${kl[kl.length - 1].start}`,
+          type: "trade",
+          priority: a.confidence >= 80 ? "high" : "medium",
+          title: `${c.sym} · сигнал TA-движка · confidence ${a.confidence}%`,
+          body: `${a.side === "buy" ? "ЛОНГ" : "ШОРТ"} по ${price.toFixed(dec)}. ${a.reasons.join(" · ")}. Стоп ${a.sl.toFixed(dec)} / цель ${a.tp.toFixed(dec)} · R:R 1:${a.rr.toFixed(1)}.`,
+          confidence: a.confidence,
+          sourceAgents: [a.agent],
+          actions: [
+            { id: "a1", label: `Открыть ${a.side === "buy" ? "ЛОНГ" : "ШОРТ"} ${c.sym}`, primary: true, trade: { symbol: c.bybit, side: a.side } },
+            { id: "a2", label: "К терминалу", primary: false, navigate: "dashboard" },
+          ],
+          impact: `R:R 1:${a.rr.toFixed(1)}`,
+          relevance: `${c.sym}/USDT`,
+          age: 0, isNew: true,
+        };
+        setSuggestions(prev => [sug, ...prev].slice(0, 14));
+        if (a.confidence >= 80) {
+          window.__emitToast?.({
+            kind: a.side === "buy" ? "buy" : "sell",
+            title: `Co-Pilot · сигнал ${c.sym}`,
+            body: `${a.side === "buy" ? "ЛОНГ" : "ШОРТ"} @ ${price.toFixed(dec)} · conf ${a.confidence}%`,
+            meta: a.reasons[0] || "",
+          });
+        }
+        break;   // one real signal per scan
+      } catch (_) {}
+    }
+  }
+  useEffect(() => { scanForRealSignals(); }, []);
+  useInterval(() => { scanForRealSignals(); }, 60000);
+
   // auto-add new suggestion every ~30-50s
   useInterval(() => {
     if (Math.random() < 0.4) return;
+    // NOTE: trade suggestions are NOT invented here — they come from the real TA
+    // engine (see scanForRealSignals below). These are ambient system messages.
     const POOLS = [
-      {
-        type: "trade",
-        priority: pick(["medium", "high"]),
-        title: `${pick(["ETH", "BTC", "SOL", "AVAX"])} · ${pick(["short-сигнал детектирован", "пробой сопротивления", "divergence MACD"])}`,
-        body: `Strategy Agent выявил ${pick(["bullish", "bearish"])} паттерн. Confidence ${randInt(74, 92)}%. Окно действия 1-6ч.`,
-        confidence: randInt(74, 92),
-        sourceAgents: ["strategy.agt", "forecast.agt"],
-        actions: [{ id: "a1", label: "Открыть позицию", primary: true, navigate: "dashboard" }, { id: "a2", label: "Изучить", primary: false }],
-        impact: `${pick(["+", "−"])}${(Math.random() * 4 + 1).toFixed(1)}% target`,
-        relevance: pick(["ETH/USDT", "BTC/USDT", "SOL/USDT"]),
-      },
       {
         type: "risk",
         priority: "high",
@@ -371,6 +398,15 @@ function CoPilot() {
                 dismissed={dismissed.has(s.id)}
                 onDismiss={() => dismiss(s.id)}
                 onAction={(act) => {
+                  // A trade action actually opens the demo position: the terminal
+                  // listens for this, switches to the symbol and executes.
+                  if (act.trade) {
+                    window.dispatchEvent(new CustomEvent("vael:opentrade", { detail: act.trade }));
+                    window.__navTo?.("dashboard");
+                    setOpen(false);
+                    dismiss(s.id);
+                    return;
+                  }
                   if (act.navigate) {
                     window.__navTo?.(act.navigate);
                     setOpen(false);
