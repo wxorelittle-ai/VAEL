@@ -3,6 +3,7 @@
 const NAV_ITEMS = [
   { id: "dashboard", ru: "Дашборд",     en: "Dashboard",     glyph: "◐" },
   { id: "brain",     ru: "AI Мозг",     en: "AI Brain",      glyph: "❂" },
+  { id: "plan",      ru: "Trade Plan",  en: "Trade Plan",    glyph: "⌖" },
   { id: "portfolio", ru: "Портфель",    en: "Portfolio",     glyph: "◑" },
   { id: "smart",     ru: "Smart Money", en: "Smart Money",   glyph: "♕" },
   { id: "agents",    ru: "Агенты",      en: "Agents",        glyph: "⬢" },

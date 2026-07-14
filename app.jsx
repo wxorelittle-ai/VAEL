@@ -209,6 +209,7 @@ function App() {
     switch (page) {
       case "dashboard": return <DashboardPage agents={agents} metrics={metrics} lang={t.lang} mission={mission} />;
       case "brain":     return <BrainPage lang={t.lang} />;
+      case "plan":      return <TradePlanPage lang={t.lang} />;
       case "portfolio": return <PortfolioPage lang={t.lang} />;
       case "smart":     return <SmartMoneyPage lang={t.lang} />;
       case "agents":    return <AgentsPage agents={agents} lang={t.lang} />;
