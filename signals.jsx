@@ -492,15 +492,51 @@ function taCandlePatterns(candles, lookback = 50) {
     const lower = Math.min(c.open, c.close) - c.lo;
     const trendUp = candles[i - 1].close > candles[i - 3].close;
     const trendDn = candles[i - 1].close < candles[i - 3].close;
+    const c2 = candles[i - 2];
     const pRed = p.close < p.open, pGreen = p.close > p.open;
     const cGreen = c.close > c.open, cRed = c.close < c.open;
+    const c2Green = c2.close > c2.open, c2Red = c2.close < c2.open;
+    const bodyP = Math.abs(p.close - p.open), bodyC2 = Math.abs(c2.close - c2.open);
+    const rangeC2 = (c2.hi - c2.lo) || 1e-9;
+    const midC2 = (c2.open + c2.close) / 2, midP = (p.open + p.close) / 2;
+    const tol = c.close * 0.0015;
 
+    // 3-candle: three soldiers / crows (strong momentum)
+    if (cGreen && pGreen && c2Green && c.close > p.close && p.close > c2.close && body > range * 0.4) {
+      out.push({ idx: i, name: "three_soldiers", ru: "Три белых солдата", bias: "bull" }); continue;
+    }
+    if (cRed && pRed && c2Red && c.close < p.close && p.close < c2.close && body > range * 0.4) {
+      out.push({ idx: i, name: "three_crows", ru: "Три чёрных ворона", bias: "bear" }); continue;
+    }
+    // 3-candle: morning / evening star (reversal)
+    if (c2Red && bodyC2 > rangeC2 * 0.5 && bodyP < bodyC2 * 0.5 && cGreen && c.close > midC2) {
+      out.push({ idx: i, name: "morning_star", ru: "Утренняя звезда", bias: "bull" }); continue;
+    }
+    if (c2Green && bodyC2 > rangeC2 * 0.5 && bodyP < bodyC2 * 0.5 && cRed && c.close < midC2) {
+      out.push({ idx: i, name: "evening_star", ru: "Вечерняя звезда", bias: "bear" }); continue;
+    }
+    // 2-candle: engulfing
     if (cGreen && pRed && c.close >= p.open && c.open <= p.close && body > 0) {
       out.push({ idx: i, name: "bull_engulf", ru: "Бычье поглощение", bias: "bull" }); continue;
     }
     if (cRed && pGreen && c.open >= p.close && c.close <= p.open && body > 0) {
       out.push({ idx: i, name: "bear_engulf", ru: "Медвежье поглощение", bias: "bear" }); continue;
     }
+    // 2-candle: piercing / dark cloud
+    if (pRed && cGreen && c.open < p.lo && c.close > midP && c.close < p.open) {
+      out.push({ idx: i, name: "piercing", ru: "Просвет в облаках", bias: "bull" }); continue;
+    }
+    if (pGreen && cRed && c.open > p.hi && c.close < midP && c.close > p.open) {
+      out.push({ idx: i, name: "dark_cloud", ru: "Завеса из тёмных облаков", bias: "bear" }); continue;
+    }
+    // 2-candle: tweezers (equal highs/lows at a swing)
+    if (trendUp && Math.abs(c.hi - p.hi) <= tol && upper > body) {
+      out.push({ idx: i, name: "tweezer_top", ru: "Пинцет-вершина", bias: "bear" }); continue;
+    }
+    if (trendDn && Math.abs(c.lo - p.lo) <= tol && lower > body) {
+      out.push({ idx: i, name: "tweezer_bottom", ru: "Пинцет-основание", bias: "bull" }); continue;
+    }
+    // 1-candle: hammer / shooting star
     if (lower >= body * 2 && upper <= body * 0.6 && body > 0 && trendDn) {
       out.push({ idx: i, name: "hammer", ru: "Молот", bias: "bull" }); continue;
     }
