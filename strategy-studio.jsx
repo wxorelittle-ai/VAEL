@@ -23,6 +23,10 @@ const INDICATOR_TYPES = [
   { id: "stoch",      ru: "Stochastic",           params: ["length", "smooth"], defaults: { length: 14, smooth: 3 } },
   { id: "willr",      ru: "Williams %R",          params: ["period"], defaults: { period: 14 } },
   { id: "mfi",        ru: "MFI (Money Flow)",     params: ["period"], defaults: { period: 14 } },
+  { id: "keltner",    ru: "Keltner Channels",     params: ["period", "mult"], defaults: { period: 20, mult: 2 } },
+  { id: "donchian",   ru: "Donchian Channels",    params: ["period"], defaults: { period: 20 } },
+  { id: "obv",        ru: "OBV (объём)",          params: [],         defaults: {} },
+  { id: "roc",        ru: "ROC (momentum)",       params: ["period"], defaults: { period: 12 } },
   { id: "vwap",       ru: "VWAP",                 params: [],         defaults: {} },
   { id: "vol",        ru: "Volume Profile",       params: ["window"], defaults: { window: 24 } },
   { id: "atr",        ru: "ATR (волатильность)",  params: ["period"], defaults: { period: 14 } },
@@ -275,6 +279,51 @@ const STRATEGY_PRESETS = [
         { uid: "e2", left: "price", op: "gt", right: "em06", connector: "AND" },
       ],
       exit: { type: "tp_sl", tp: 5, sl: 3, trailing: 2, candles: 24 },
+      sizing: "pct",
+    }),
+  },
+  {
+    key: "donchian_bo",
+    title: "Donchian Breakout (Turtle)",
+    tag: "пробой",
+    desc: "Черепашья классика: вход при пробое 20-периодного максимума канала Дончиана над EMA50.",
+    build: () => ({
+      ...makeNewStrategy(),
+      name: "Donchian Breakout · Turtle",
+      sources: ["price"],
+      indicators: [
+        { uid: "dc01", id: "donchian", params: { period: 20 } },
+        { uid: "em07", id: "ema", params: { period: 50 } },
+      ],
+      side: "both", minConfidence: 76,
+      entry: [
+        { uid: "e1", left: "price", op: "cross_above", right: "dc01", connector: null },
+        { uid: "e2", left: "price", op: "gt", right: "em07", connector: "AND" },
+      ],
+      exit: { type: "trailing", tp: 7, sl: 3, trailing: 2.5, candles: 26 },
+      sizing: "pct",
+    }),
+  },
+  {
+    key: "keltner_squeeze",
+    title: "Keltner Squeeze Breakout",
+    tag: "пробой",
+    desc: "TTM-идея: Bollinger сжимается внутри Keltner (низкая волатильность) → вход на пробое верхней полосы Keltner.",
+    build: () => ({
+      ...makeNewStrategy(),
+      name: "Keltner Squeeze · BO",
+      sources: ["price"],
+      indicators: [
+        { uid: "kc01", id: "keltner", params: { period: 20, mult: 2 } },
+        { uid: "bb03", id: "bb", params: { period: 20, mult: 2 } },
+        { uid: "em08", id: "ema", params: { period: 50 } },
+      ],
+      side: "buy", minConfidence: 77,
+      entry: [
+        { uid: "e1", left: "price", op: "cross_above", right: "kc01", connector: null },
+        { uid: "e2", left: "price", op: "gt", right: "em08", connector: "AND" },
+      ],
+      exit: { type: "trailing", tp: 6, sl: 3, trailing: 2, candles: 24 },
       sizing: "pct",
     }),
   },
@@ -1001,6 +1050,24 @@ function StrategyPreview({ strategy, asset, step }) {
     return out;
   }, [candles, strategy.indicators]);
 
+  const chan = useMemo(() => {
+    const kc = strategy.indicators.find(i => i.id === "keltner");
+    const dc = strategy.indicators.find(i => i.id === "donchian");
+    if ((!kc && !dc) || candles.length < 25) return null;
+    const out = { keltner: null, donchian: null };
+    if (kc && typeof taKeltner === "function") {
+      const period = kc.params?.period || 20, mult = kc.params?.mult || 2;
+      out.keltner = [];
+      for (let idx = candles.length - 50; idx < candles.length; idx++) out.keltner.push(taKeltner(candles.slice(0, idx + 1), period, mult));
+    }
+    if (dc && typeof taDonchian === "function") {
+      const period = dc.params?.period || 20;
+      out.donchian = [];
+      for (let idx = candles.length - 50; idx < candles.length; idx++) out.donchian.push(taDonchian(candles.slice(0, idx + 1), period));
+    }
+    return out;
+  }, [candles, strategy.indicators]);
+
   const s = bt ? bt.stats : null;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -1009,7 +1076,7 @@ function StrategyPreview({ strategy, asset, step }) {
         <div style={{ background: "var(--bg-1)", border: "1px solid var(--line)", borderRadius: 4, padding: 8 }}>
           {loading
             ? <div style={{ height: 200, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: 11 }}>загрузка свечей Bybit…</div>
-            : <PreviewChart candles={chartCandles} ema={ema} st={st} bb={bb} psar={psar} ichi={ichi} markers={chartMarkers} width={400} height={200} />}
+            : <PreviewChart candles={chartCandles} ema={ema} st={st} bb={bb} psar={psar} ichi={ichi} chan={chan} markers={chartMarkers} width={400} height={200} />}
           {rsi && !loading && (
             <div style={{ marginTop: 4 }}>
               <div style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--text-dim)", marginBottom: 2 }}>RSI {strategy.indicators.find(i => i.id === "rsi").params.period}</div>
@@ -1054,14 +1121,15 @@ function StrategyPreview({ strategy, asset, step }) {
   );
 }
 
-function PreviewChart({ candles, ema, st, bb, psar, ichi, markers, width = 400, height = 200 }) {
+function PreviewChart({ candles, ema, st, bb, psar, ichi, chan, markers, width = 400, height = 200 }) {
   const lows = candles.map(c => c.lo), highs = candles.map(c => c.hi);
   const stVals = st ? st.map(p => p.v).filter(v => isFinite(v) && v > 0) : [];
   const bbVals = bb ? bb.flatMap(p => [p.upper, p.lower]).filter(v => isFinite(v) && v > 0) : [];
   const psarVals = psar ? psar.map(p => p.v).filter(v => isFinite(v) && v > 0) : [];
   const ichiVals = ichi ? ichi.flatMap(p => [p.spanA, p.spanB, p.tenkan, p.kijun]).filter(v => isFinite(v) && v > 0) : [];
-  const min = Math.min(...lows, ...stVals, ...bbVals, ...psarVals, ...ichiVals);
-  const max = Math.max(...highs, ...stVals, ...bbVals, ...psarVals, ...ichiVals);
+  const chanVals = chan ? [...(chan.keltner || []), ...(chan.donchian || [])].flatMap(p => [p.upper, p.lower]).filter(v => isFinite(v) && v > 0) : [];
+  const min = Math.min(...lows, ...stVals, ...bbVals, ...psarVals, ...ichiVals, ...chanVals);
+  const max = Math.max(...highs, ...stVals, ...bbVals, ...psarVals, ...ichiVals, ...chanVals);
   const range = (max - min) || 1;
   const stepX = width / candles.length;
   const candleW = Math.max(2, stepX * 0.6);
@@ -1072,6 +1140,10 @@ function PreviewChart({ candles, ema, st, bb, psar, ichi, markers, width = 400, 
   // Bollinger bands — upper/lower dashed, mid faint solid
   const bbLine = (key) => bb ? bb.map((p, i) => `${i === 0 ? "M" : "L"}${i * stepX + stepX/2},${y(p[key])}`).join(" ") : null;
   const bbUpper = bbLine("upper"), bbMid = bbLine("mid"), bbLower = bbLine("lower");
+
+  // Keltner / Donchian channels — line path over a series/key
+  const chanLine = (arr, key) => arr ? arr.map((p, i) => `${i === 0 ? "M" : "L"}${i * stepX + stepX / 2},${y(p[key])}`).join(" ") : null;
+  const kc = chan && chan.keltner, dc = chan && chan.donchian;
 
   // Ichimoku — shaded cloud between spanA/spanB (colour by last state) + tenkan/kijun lines
   let ichiCloud = null, ichiCloudColor = null, ichiTenkan = null, ichiKijun = null;
@@ -1125,6 +1197,18 @@ function PreviewChart({ candles, ema, st, bb, psar, ichi, markers, width = 400, 
           <path d={bbUpper} fill="none" stroke="var(--blue)" strokeWidth={0.9} strokeDasharray="3 2" opacity={0.7} />
           <path d={bbLower} fill="none" stroke="var(--blue)" strokeWidth={0.9} strokeDasharray="3 2" opacity={0.7} />
           <path d={bbMid} fill="none" stroke="var(--blue)" strokeWidth={0.7} opacity={0.35} />
+        </g>
+      )}
+      {kc && (
+        <g>
+          <path d={chanLine(kc, "upper")} fill="none" stroke="var(--accent-2)" strokeWidth={0.9} opacity={0.7} />
+          <path d={chanLine(kc, "lower")} fill="none" stroke="var(--accent-2)" strokeWidth={0.9} opacity={0.7} />
+        </g>
+      )}
+      {dc && (
+        <g>
+          <path d={chanLine(dc, "upper")} fill="none" stroke="var(--text-dim)" strokeWidth={0.8} strokeDasharray="2 2" opacity={0.7} />
+          <path d={chanLine(dc, "lower")} fill="none" stroke="var(--text-dim)" strokeWidth={0.8} strokeDasharray="2 2" opacity={0.7} />
         </g>
       )}
       {emaPath && (

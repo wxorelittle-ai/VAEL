@@ -325,6 +325,48 @@ function taIchimoku(candles, conv = 9, base = 26, spanBLen = 52) {
   return { tenkan, kijun, spanA, spanB, price, aboveCloud: price > top, belowCloud: price < bot };
 }
 
+/* Keltner Channels(period, mult) → { upper, mid, lower }. EMA basis ± mult·ATR.
+ * Bollinger inside Keltner = "squeeze" (low volatility → breakout ahead). Own impl. */
+function taKeltner(candles, period = 20, mult = 2) {
+  const n = candles ? candles.length : 0;
+  if (n < period + 1) { const p = n ? candles[n - 1].close : 0; return { upper: p, mid: p, lower: p }; }
+  const mid = taEma(candles.map(c => c.close), period);
+  const atr = taAtr(candles, period);
+  return { upper: mid + mult * atr, mid, lower: mid - mult * atr };
+}
+
+/* Donchian Channels(period) → { upper, mid, lower }. Highest-high / lowest-low over N.
+ * Turtle-style breakout channel. Own implementation. */
+function taDonchian(candles, period = 20) {
+  const n = candles ? candles.length : 0;
+  if (n < period) { const p = n ? candles[n - 1].close : 0; return { upper: p, mid: p, lower: p }; }
+  let hh = -Infinity, ll = Infinity;
+  for (let i = n - period; i < n; i++) { if (candles[i].hi > hh) hh = candles[i].hi; if (candles[i].lo < ll) ll = candles[i].lo; }
+  return { upper: hh, lower: ll, mid: (hh + ll) / 2 };
+}
+
+/* On-Balance Volume → { value, prev }. Cumulative volume ± by close direction;
+ * OBV rising while price flat = accumulation. Own implementation. */
+function taObv(candles) {
+  const n = candles ? candles.length : 0;
+  if (n < 2) return { value: 0, prev: 0 };
+  let obv = 0, prev = 0;
+  for (let i = 1; i < n; i++) {
+    if (i === n - 1) prev = obv;
+    const d = candles[i].close - candles[i - 1].close;
+    if (d > 0) obv += candles[i].v || 0; else if (d < 0) obv -= candles[i].v || 0;
+  }
+  return { value: obv, prev };
+}
+
+/* Rate of Change(period) → % change vs `period` candles ago. Momentum. Own impl. */
+function taRoc(values, period = 12) {
+  const n = values ? values.length : 0;
+  if (n < period + 1) return 0;
+  const past = values[n - 1 - period];
+  return past ? (values[n - 1] - past) / past * 100 : 0;
+}
+
 /* Attribute a signal to the agent whose domain drove it (cosmetic, but honest) */
 function agentForSignal(a) {
   const macdTurn = a.macd && ((a.side === "buy" && a.macd.hist > 0 && a.macd.histPrev <= 0) ||
@@ -506,4 +548,5 @@ Object.assign(window, {
   taSmaSeries, taRsiSeries, taStochRsi, taSupertrend, taDmi, taBollinger,
   taCci, taParabolicSar, taAwesome,
   taStochastic, taWilliamsR, taMfi, taIchimoku,
+  taKeltner, taDonchian, taObv, taRoc,
 });
