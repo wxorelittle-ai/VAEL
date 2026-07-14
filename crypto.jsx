@@ -4,8 +4,8 @@
  * Asset pool — symbols we track
  * ────────────────────────────────────────────────────────*/
 const CRYPTO_ASSETS = [
+  { sym: "BTC/USDT",  bybit: "BTCUSDT",  name: "Bitcoin" },   // main chart
   { sym: "ETH/USDT",  bybit: "ETHUSDT",  name: "Ethereum" },
-  { sym: "BTC/USDT",  bybit: "BTCUSDT",  name: "Bitcoin" },
   { sym: "SOL/USDT",  bybit: "SOLUSDT",  name: "Solana"  },
   { sym: "AVAX/USDT", bybit: "AVAXUSDT", name: "Avalanche" },
 ];
@@ -337,11 +337,9 @@ function CryptoSignalsPanel({ lang }) {
   // from writing stale (old-asset) trades under the new key during a switch.
   const hydratedKeyRef = useRef(null);
 
-  // On asset switch: signals are ephemeral (re-seeded from candles), but demo
-  // trades persist per-asset in localStorage so a page reload keeps open positions.
+  // On asset switch: demo trades persist per-asset in localStorage, so a reload
+  // (or coming back to the symbol) restores the open positions.
   useEffect(() => {
-    setSignals([]);
-    seededRef.current = null;
     try {
       const saved = JSON.parse(localStorage.getItem(`vael.trades.${asset.bybit}`) || "null");
       setPositions(Array.isArray(saved?.positions) ? saved.positions : []);
@@ -349,6 +347,14 @@ function CryptoSignalsPanel({ lang }) {
     } catch (_) { setPositions([]); setHistory([]); }
     hydratedKeyRef.current = asset.bybit;
   }, [assetIdx]);
+
+  // Signals are bound to the exact chart (symbol + timeframe): their candleIdx
+  // stops mapping the moment either changes, so wipe them and re-seed. Without
+  // this, switching timeframe left the previous chart's markers on screen.
+  useEffect(() => {
+    setSignals([]);
+    seededRef.current = null;
+  }, [assetIdx, tf]);
 
   // Persist demo trades (open positions + closed history) whenever they change,
   // keyed per asset. Reload / reopen restores exactly what was on screen.
@@ -379,13 +385,15 @@ function CryptoSignalsPanel({ lang }) {
     });
   }
 
-  // seed the initial signal set once real candles for this asset have loaded
+  // Seed the signal set once real candles for THIS chart (symbol + timeframe)
+  // have loaded. Keyed on both — a timeframe switch must re-seed, not reuse.
   useEffect(() => {
-    if (candles.length >= 20 && seededRef.current !== asset.bybit) {
-      seededRef.current = asset.bybit;
+    const key = `${asset.bybit}:${tf}`;
+    if (candles.length >= 20 && seededRef.current !== key) {
+      seededRef.current = key;
       setSignals(makeInitialSignals(candles));
     }
-  }, [candles, asset.bybit]);
+  }, [candles, asset.bybit, tf]);
 
   // active signal = the most recent 'active' one
   const activeSignal = useMemo(() => {
