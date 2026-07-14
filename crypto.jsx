@@ -297,13 +297,29 @@ function CryptoSignalsPanel({ lang }) {
   const [customStrategies, setCustomStrategies] = useState([]);
   const seededRef = useRef(null);
 
-  // clear signals/trades immediately on asset switch (stale data must not linger)
+  // Tracks which asset the persisted trades belong to — guards the persist effect
+  // from writing stale (old-asset) trades under the new key during a switch.
+  const hydratedKeyRef = useRef(null);
+
+  // On asset switch: signals are ephemeral (re-seeded from candles), but demo
+  // trades persist per-asset in localStorage so a page reload keeps open positions.
   useEffect(() => {
     setSignals([]);
-    setPositions([]);
-    setHistory([]);
     seededRef.current = null;
+    try {
+      const saved = JSON.parse(localStorage.getItem(`vael.trades.${asset.bybit}`) || "null");
+      setPositions(Array.isArray(saved?.positions) ? saved.positions : []);
+      setHistory(Array.isArray(saved?.history) ? saved.history : []);
+    } catch (_) { setPositions([]); setHistory([]); }
+    hydratedKeyRef.current = asset.bybit;
   }, [assetIdx]);
+
+  // Persist demo trades (open positions + closed history) whenever they change,
+  // keyed per asset. Reload / reopen restores exactly what was on screen.
+  useEffect(() => {
+    if (hydratedKeyRef.current !== asset.bybit) return; // don't write during a switch
+    try { localStorage.setItem(`vael.trades.${asset.bybit}`, JSON.stringify({ positions, history })); } catch (_) {}
+  }, [positions, history, asset.bybit]);
 
   // seed the initial signal set once real candles for this asset have loaded
   useEffect(() => {
@@ -475,9 +491,9 @@ function CryptoSignalsPanel({ lang }) {
     const pnlPct = closing.side === "buy"
       ? (exitPrice - closing.entry) / closing.entry * 100
       : (closing.entry - exitPrice) / closing.entry * 100;
-    // pure state updates
+    // pure state updates (functional — safe when several positions close in one tick)
     setPositions(prev => prev.filter(p => p.id !== id));
-    setHistory(h => [{ ...closing, exitPrice, pnl, pnlPct, closedAt: nowTsHM(), reason }, ...h].slice(0, 24));
+    setHistory(prev => [{ ...closing, exitPrice, pnl, pnlPct, closedAt: nowTsHM(), reason }, ...prev].slice(0, 24));
     // side effect outside any updater
     const reasonLabel = reason === "tp" ? "Take Profit" : reason === "sl" ? "Stop Loss" : "ручное закрытие";
     window.__emitToast?.({
