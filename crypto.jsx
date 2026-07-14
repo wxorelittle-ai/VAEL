@@ -713,58 +713,29 @@ function CryptoSignalsPanel({ lang }) {
   }, [candles, asset.bybit]);
 
   // "Найти точку входа" — read the live setup, draw entry/SL/TP + a 2%-risk size
+  /* Builds the full plan: the PRICE to enter at (a support/resistance cluster,
+   * not just "market now"), the stop beyond that structure, a target at the next
+   * level, and the smallest safe leverage. See optimalEntry() in signals.jsx. */
   function findEntry() {
-    if (!candles.length || typeof analyzeMarket !== "function") return;
+    if (!candles.length || typeof optimalEntry !== "function") return;
+    const p = optimalEntry(candles, { budget, riskPct: 0.02, maxLev: asset.maxLev || 100 });
+    if (!p) return;
+
     const a = analyzeMarket(candles);
-    if (!a) return;
-    const price = candles[candles.length - 1].close;
-    const RISK = 0.02;                              // risk 2% of the budget per trade
-    const exchMaxLev = asset.maxLev || 100;
-    const slPct = Math.abs(price - a.sl) / price || 0.004;
-
-    /* HARD RULE: liquidation must sit BEYOND the stop-loss, with a safety buffer.
-     * Liquidation distance ≈ 1/leverage, so leverage must satisfy
-     *     1/lev  >  slPct · BUFFER   ⇒   lev < 1 / (slPct · BUFFER)
-     * Without this, a big leverage puts liquidation CLOSER than the stop — you get
-     * wiped before the stop can fire and lose the whole margin, not the planned 2%. */
-    const LIQ_BUFFER = 1.5;
-    const maxSafeLev = Math.max(1, Math.floor(1 / (slPct * LIQ_BUFFER)));
-
-    // desired leverage from setup quality and volatility, then clamped by safety
-    let want = a.setup ? Math.round(a.confidence / 20) : 1;   // conf 55..95% → 3..5
-    if (a.atrPct > 1.0) want -= 2;
-    if (a.atrPct > 2.0) want = 1;
-    const lev = Math.max(1, Math.min(want, maxSafeLev, exchMaxLev, 10));
-    const levCapped = lev < Math.max(1, Math.min(want, exchMaxLev, 10));   // safety trimmed it
-
-    // margin so that a stop-out costs ~RISK of the budget: margin·lev·slPct = risk$.
-    // Never commit more than half the budget to a single position.
-    const MAX_MARGIN = budget * 0.5;
-    const amount = Math.max(10, Math.min(MAX_MARGIN, Math.round((budget * RISK) / (lev * slPct) / 10) * 10));
-
-    // resulting liquidation price — always further from entry than the stop
-    const liq = lev > 1
-      ? (a.side === "buy" ? price * (1 - 1 / lev) : price * (1 + 1 / lev))
-      : null;
-
-    // which of our strategies fits this market right now
-    const strategy = (typeof matchStrategy === "function" && typeof taDmi === "function")
+    const strategy = (a && typeof matchStrategy === "function" && typeof taDmi === "function")
       ? matchStrategy({ a, dmi: taDmi(candles, 14), rsi: a.rsi, atrPct: a.atrPct })
       : null;
 
-    const dec = price < 10 ? 4 : 2;
-    setEntryPlan({
-      side: a.side, entry: price, sl: a.sl, tp: a.tp, amount, lev, liq,
-      notional: amount * lev, riskUsd: Math.round(budget * RISK), budget,
-      maxSafeLev, levCapped, slPct,
-      conf: a.confidence, setup: a.setup, reasons: a.reasons, rr: a.rr, strategy,
-    });
-    setForm(f => ({ ...f, side: a.side, amount, lev }));
+    const dec = p.price < 10 ? 4 : 2;
+    setEntryPlan({ ...p, amount: p.margin, strategy });
+    setForm(f => ({ ...f, side: p.side, amount: p.margin, lev: p.lev }));
+
+    const isLimit = p.entryType === "limit";
     window.__emitToast?.({
-      kind: a.side === "buy" ? "buy" : "sell",
-      title: `${asset.sym} · план входа готов`,
-      body: `${a.side === "buy" ? "ЛОНГ" : "ШОРТ"} @ ${price.toFixed(dec)} · маржа $${amount} × ${lev}x = $${amount * lev}${strategy ? ` · ${strategy.name}` : ""}`,
-      meta: `риск $${Math.round(budget * RISK)} (2% от $${budget}) · SL ${a.sl.toFixed(dec)}${liq ? ` · ликв. ${liq.toFixed(dec)} (за стопом)` : ""}`,
+      kind: p.side === "buy" ? "buy" : "sell",
+      title: `${asset.sym} · ${isLimit ? "лимит: ждём откат" : "вход по рынку"}`,
+      body: `${p.side === "buy" ? "ЛОНГ" : "ШОРТ"} @ ${p.entry.toFixed(dec)}${isLimit ? ` (сейчас ${p.price.toFixed(dec)})` : ""} · маржа $${p.margin} × ${p.lev}x = $${p.notional}`,
+      meta: `R:R 1:${p.rr.toFixed(1)}${p.edgePct > 3 ? ` (+${p.edgePct.toFixed(0)}% к входу по рынку)` : ""} · прибыль ~$${p.profitAtTp.toFixed(0)} / риск $${p.lossAtSl.toFixed(0)}`,
     });
   }
 
@@ -1720,6 +1691,31 @@ function EntryPlanCard({ plan, sym, onApply, onClear }) {
         <button onClick={onClear} title="убрать план" style={{ marginLeft: "auto", background: "transparent", border: "none", color: "var(--text-dim)", cursor: "pointer", fontSize: 12 }}>✕</button>
       </div>
 
+      {/* market vs limit: the optimiser may want a better price than "right now" */}
+      <div style={{
+        display: "flex", alignItems: "center", gap: 6,
+        fontFamily: "var(--font-mono)", fontSize: 9.5,
+        background: "var(--bg-0)", border: `1px solid ${plan.entryType === "limit" ? "var(--accent-2)" : "var(--line)"}`,
+        borderRadius: 3, padding: "4px 7px",
+      }}>
+        {plan.entryType === "limit" ? (
+          <>
+            <span style={{ color: "var(--accent-2)", fontWeight: 700 }}>ЛИМИТ</span>
+            <span style={{ color: "var(--text-mid)" }}>
+              ждём откат до {plan.entry.toFixed(dec)} (сейчас {plan.price.toFixed(dec)})
+            </span>
+            {plan.edgePct > 3 && (
+              <span style={{ marginLeft: "auto", color: "var(--green)" }}>R:R +{plan.edgePct.toFixed(0)}%</span>
+            )}
+          </>
+        ) : (
+          <>
+            <span style={{ color: "var(--accent)", fontWeight: 700 }}>ПО РЫНКУ</span>
+            <span style={{ color: "var(--text-mid)" }}>цена уже у уровня — ждать нечего</span>
+          </>
+        )}
+      </div>
+
       {plan.strategy && (
         <div style={{ fontSize: 10.5, color: "var(--text-mid)", lineHeight: 1.4 }}>
           <span style={{ color: "var(--accent-2)" }}>стратегия: </span>
@@ -1728,12 +1724,18 @@ function EntryPlanCard({ plan, sym, onApply, onClear }) {
       )}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 5, fontFamily: "var(--font-mono)", fontSize: 10 }}>
-        <PlanBox label="Вход" v={plan.entry.toFixed(dec)} c="var(--text-bright)" />
+        <PlanBox label="Вход" v={plan.entry.toFixed(dec)} c={plan.entryType === "limit" ? "var(--accent-2)" : "var(--text-bright)"} />
         <PlanBox label="Стоп" v={plan.sl.toFixed(dec)} c="var(--red)" />
         <PlanBox label="Цель" v={plan.tp.toFixed(dec)} c="var(--green)" />
         <PlanBox label="Маржа" v={`$${plan.amount}`} c="var(--text-bright)" />
-        <PlanBox label="Плечо" v={`${plan.lev}x`} c={plan.lev >= 5 ? "var(--amber)" : "var(--accent)"} />
+        <PlanBox label="Плечо" v={`${plan.lev}x`} c={plan.lev >= 10 ? "var(--amber)" : "var(--accent)"} />
         <PlanBox label="Позиция" v={`$${plan.notional}`} c="var(--accent-2)" />
+      </div>
+
+      {/* what the plan actually earns / risks in dollars */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5, fontFamily: "var(--font-mono)", fontSize: 10 }}>
+        <PlanBox label="Прибыль в цели" v={`+$${plan.profitAtTp.toFixed(0)}`} c="var(--green)" />
+        <PlanBox label="Убыток по стопу" v={`−$${plan.lossAtSl.toFixed(0)}`} c="var(--red)" />
       </div>
 
       {/* liquidation is deliberately kept beyond the stop — the stop always fires first */}

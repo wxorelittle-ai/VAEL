@@ -1030,9 +1030,134 @@ function projectPath(candles, steps = 20, ctx = {}) {
   };
 }
 
+/* ─────────────────────────────────────────────────────────
+ * Optimal entry — the price to enter at, not just "market now".
+ *
+ * Honest math first: with risk-based sizing (margin = risk$ / (lev · stop%)),
+ * the DOLLAR profit at target equals risk$ · R:R — it does not depend on
+ * leverage at all. Leverage only changes how much margin is tied up. The real
+ * lever on profit is the ENTRY PRICE: entering nearer a support tightens the
+ * stop, so the same 2% risk buys a bigger position and earns more at the same
+ * target. That is what this function optimises.
+ *
+ * Method: collect structural levels (EMA20/50, Supertrend, Bollinger, Donchian,
+ * swing high/low), find the strongest confluence cluster just below price (long)
+ * or above it (short), place the entry there, the stop beyond the structure, and
+ * the target at the nearest level that pays at least 1.5 R. Leverage is then the
+ * SMALLEST that keeps margin sane — clamped so liquidation stays beyond the stop.
+ * ────────────────────────────────────────────────────────*/
+function keyLevels(candles) {
+  const closes = candles.map(c => c.close);
+  const n = candles.length;
+  const w = candles.slice(-30);
+  return {
+    price: closes[n - 1],
+    atr: taAtr(candles, 14),
+    ema20: taEma(closes, 20),
+    ema50: taEma(closes, 50),
+    st: taSupertrend(candles, 3, 10).value,
+    bb: taBollinger(closes, 20, 2),
+    dc: taDonchian(candles, 20),
+    swingHi: Math.max(...w.map(c => c.hi)),
+    swingLo: Math.min(...w.map(c => c.lo)),
+  };
+}
+
+function optimalEntry(candles, opts = {}) {
+  if (!candles || candles.length < 60 || typeof analyzeMarket !== "function") return null;
+  const a = analyzeMarket(candles);
+  if (!a) return null;
+
+  const budget = opts.budget || 10000;
+  const riskPct = opts.riskPct != null ? opts.riskPct : 0.02;
+  const exchMaxLev = opts.maxLev || 100;
+  const HARD_LEV_CAP = 20;
+  const LIQ_BUFFER = 1.5;          // liquidation must be ≥1.5× further than the stop
+  const MAX_MARGIN_FRAC = 0.5;     // never commit >50% of the budget
+  const TGT_MARGIN_FRAC = 0.25;    // aim to tie up ≈25% — leverage only as needed
+
+  const L = keyLevels(candles);
+  const price = L.price;
+  const atr = L.atr || price * 0.004;
+  const long = a.side === "buy";
+
+  /* 1. candidate entry levels near price, on the correct side */
+  const cands = (long
+    ? [L.ema20, L.ema50, L.st, L.bb.mid, L.bb.lower, L.swingLo, L.dc.lower]
+    : [L.ema20, L.ema50, L.st, L.bb.mid, L.bb.upper, L.swingHi, L.dc.upper]
+  ).filter(v => isFinite(v) && v > 0)
+   .filter(v => long ? (v < price && v > price - 2.5 * atr) : (v > price && v < price + 2.5 * atr));
+
+  /* 2. strongest confluence cluster (more levels agreeing + closer to price wins) */
+  let entry = price, entryType = "market", cluster = [];
+  if (cands.length) {
+    const tol = atr * 0.4;
+    let best = null;
+    cands.forEach(v => {
+      const grp = cands.filter(x => Math.abs(x - v) <= tol);
+      const score = grp.length - Math.abs(price - v) / (2.5 * atr);
+      if (!best || score > best.score) best = { grp, score };
+    });
+    if (best) {
+      entry = best.grp.reduce((s, x) => s + x, 0) / best.grp.length;
+      cluster = best.grp;
+      entryType = "limit";
+    }
+  }
+  // price already through the level → nothing to wait for
+  if ((long && price <= entry) || (!long && price >= entry)) { entry = price; entryType = "market"; cluster = []; }
+
+  /* 3. stop beyond the structure that justifies the entry */
+  const sl = long
+    ? Math.min(entry - atr * 0.8, L.swingLo - atr * 0.2)
+    : Math.max(entry + atr * 0.8, L.swingHi + atr * 0.2);
+  const slDist = Math.abs(entry - sl);
+  const slPct = slDist / entry;
+
+  /* 4. target: nearest structural level paying ≥1.5R, else a 1.8R projection */
+  const res = (long ? [L.bb.upper, L.dc.upper, L.swingHi] : [L.bb.lower, L.dc.lower, L.swingLo])
+    .filter(v => isFinite(v) && v > 0)
+    .filter(v => long ? v > entry + slDist * 1.5 : v < entry - slDist * 1.5)
+    .sort((x, y) => (long ? x - y : y - x));
+  const tp = res.length ? res[0] : (long ? entry + slDist * 1.8 : entry - slDist * 1.8);
+  const rr = slDist > 0 ? Math.abs(tp - entry) / slDist : 0;
+
+  /* 5. leverage: smallest that keeps margin near the target fraction, then clamped
+   *    so that liquidation can never sit inside the stop */
+  const riskUsd = budget * riskPct;
+  const maxSafeLev = Math.max(1, Math.floor(1 / (slPct * LIQ_BUFFER)));
+  const marginAt1x = riskUsd / slPct;
+  let lev = marginAt1x > budget * TGT_MARGIN_FRAC
+    ? Math.ceil(marginAt1x / (budget * TGT_MARGIN_FRAC))
+    : 1;
+  const levWanted = lev;
+  lev = Math.max(1, Math.min(lev, maxSafeLev, exchMaxLev, HARD_LEV_CAP));
+
+  const margin = Math.max(10, Math.min(budget * MAX_MARGIN_FRAC, Math.round(riskUsd / (lev * slPct) / 10) * 10));
+  const notional = margin * lev;
+  const liq = lev > 1 ? (long ? entry * (1 - 1 / lev) : entry * (1 + 1 / lev)) : null;
+
+  const profitAtTp = notional * Math.abs(tp - entry) / entry;
+  const lossAtSl = notional * slPct;
+
+  /* how much better than just buying at market right now */
+  const mktSlDist = Math.abs(price - sl);
+  const mktRR = mktSlDist > 0 ? Math.abs(tp - price) / mktSlDist : 0;
+  const edgePct = mktRR > 0 ? (rr / mktRR - 1) * 100 : 0;
+
+  return {
+    side: a.side, entry, entryType, cluster, price,
+    sl, tp, rr, slPct, lev, levCapped: lev < levWanted, maxSafeLev,
+    margin, notional, liq, riskUsd, budget,
+    profitAtTp, lossAtSl, mktRR, edgePct,
+    conf: a.confidence, setup: !!a.setup, reasons: a.reasons, atr,
+  };
+}
+
 Object.assign(window, {
   analyzeMarket, taEma, taEmaSeries, taRsi, taMacd, taAtr, agentForSignal,
   monteCarloForecast, pairAnalysis, dailyAgentSim, projectPath, newsSentiment,
+  keyLevels, optimalEntry,
   taVolAnomaly, computeMarketMetrics,
   taSmaSeries, taRsiSeries, taStochRsi, taSupertrend, taDmi, taBollinger,
   taCci, taParabolicSar, taAwesome,
