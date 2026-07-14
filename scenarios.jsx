@@ -305,8 +305,8 @@ function ScenariosPage({ lang }) {
 
   return (
     <div data-screen-label="10 Scenarios" style={{
-      height: "100%", padding: "var(--gap)",
-      display: "flex", flexDirection: "column", overflow: "hidden",
+      minHeight: "100%", padding: "var(--gap)",
+      display: "flex", flexDirection: "column",
     }}>
       <PageHeader title={lang === "en" ? "SCENARIOS" : "СЦЕНАРИИ"}
         sub="WHAT-IF LAB · моделирование рыночных событий и реакции системы"

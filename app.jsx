@@ -234,7 +234,8 @@ function App() {
       <main style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
         <TopBar lang={t.lang} mission={mission} sysStats={sysStats} onSearch={() => setPaletteOpen(true)} />
         <NewsHost />
-        <div key={page} style={{ flex: 1, overflow: "hidden", minHeight: 0, animation: "pageIn 0.22s ease-out" }}>
+        {/* Pages scroll vertically instead of clipping — panels are never cut off. */}
+        <div key={page} className="scroll" style={{ flex: 1, overflowY: "auto", overflowX: "hidden", minHeight: 0, animation: "pageIn 0.22s ease-out" }}>
           {renderPage()}
         </div>
       </main>

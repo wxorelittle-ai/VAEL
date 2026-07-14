@@ -546,7 +546,7 @@ function MemoryPageEnhanced({ lang }) {
   }, []);
 
   return (
-    <div data-screen-label="04 Memory" style={{ height: "100%", padding: "var(--gap)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+    <div data-screen-label="04 Memory" style={{ minHeight: "100%", padding: "var(--gap)", display: "flex", flexDirection: "column" }}>
       <PageHeader title={lang === "en" ? "MEMORY" : "ПАМЯТЬ"}
         sub="LONG-TERM VECTOR STORE · 2.4M embeddings · 847 entities · 14 indices"
         actions={

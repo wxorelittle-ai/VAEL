@@ -54,7 +54,7 @@ function AirdropRadarPage({ lang }) {
   const liveCount = liveTvl ? Object.keys(liveTvl).length : 0;
 
   return (
-    <div data-screen-label="15 Airdrops" style={{ height: "100%", padding: "var(--gap)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+    <div data-screen-label="15 Airdrops" style={{ minHeight: "100%", padding: "var(--gap)", display: "flex", flexDirection: "column" }}>
       <PageHeader title={lang === "en" ? "AIRDROP RADAR" : "AIRDROP · РАДАР"}
         sub={`AI-оценка перспектив · ${AIRDROP_PROJECTS.length} проектов · ${promising} перспективных · scam-scan${liveCount ? ` · ${liveCount} live TVL (DeFiLlama)` : ""}`}
         actions={<>
@@ -140,7 +140,7 @@ function FreeAirdropsPage({ lang }) {
   const diffColor = { "легко": "var(--green)", "средне": "var(--amber)", "сложно": "var(--red)" };
 
   return (
-    <div data-screen-label="16 FreeDrops" style={{ height: "100%", padding: "var(--gap)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+    <div data-screen-label="16 FreeDrops" style={{ minHeight: "100%", padding: "var(--gap)", display: "flex", flexDirection: "column" }}>
       <PageHeader title={lang === "en" ? "FREE AIRDROPS" : "БЕСПЛАТНЫЕ AIRDROPS"}
         sub={`${FREE_AIRDROPS.length} возможностей · способы участия · дедлайны · статус`}
         actions={<>

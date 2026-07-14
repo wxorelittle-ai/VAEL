@@ -591,8 +591,9 @@ function DashboardPage({ agents, metrics, lang, mission }) {
       gap: "var(--gap)",
       padding: "var(--gap)",
       height: "100%",
+      // never squash the terminal on short screens — the page scrolls instead
+      minHeight: 620,
       overflow: "hidden",
-      minHeight: 0,
     }}>
       {/* crypto trading terminal — full width (demo trading kept) */}
       <CryptoSignalsPanel lang={lang} />

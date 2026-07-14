@@ -592,8 +592,8 @@ function PortfolioPage({ lang }) {
 
   return (
     <div data-screen-label="12 Portfolio" style={{
-      height: "100%", padding: "var(--gap)",
-      display: "flex", flexDirection: "column", overflow: "hidden",
+      minHeight: "100%", padding: "var(--gap)",
+      display: "flex", flexDirection: "column",
     }}>
       <PageHeader title={lang === "en" ? "PORTFOLIO" : "ПОРТФЕЛЬ"}
         sub={`PORTFOLIO MANAGER · ${PORTFOLIO_POSITIONS.length} позиций · ${CLOSED_TRADES.length} закрытых сделок`}

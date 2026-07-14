@@ -97,8 +97,8 @@ function SmartMoneyPage({ lang }) {
 
   return (
     <div data-screen-label="13 Smart Money" style={{
-      height: "100%", padding: "var(--gap)",
-      display: "flex", flexDirection: "column", overflow: "hidden",
+      minHeight: "100%", padding: "var(--gap)",
+      display: "flex", flexDirection: "column",
     }}>
       <PageHeader title={lang === "en" ? "SMART MONEY" : "SMART MONEY"}
         sub={`COPY-TRADING · ${SMART_WALLETS.length} топ-кошельков · live feed`}

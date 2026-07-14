@@ -216,7 +216,7 @@ function MissionsPage({ lang }) {
   const [sel, setSel] = useState(MISSION_DATA[0].id);
   const selected = MISSION_DATA.find(m => m.id === sel);
   return (
-    <div data-screen-label="03 Missions" style={{ height: "100%", padding: "var(--gap)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+    <div data-screen-label="03 Missions" style={{ minHeight: "100%", padding: "var(--gap)", display: "flex", flexDirection: "column" }}>
       <PageHeader title={lang === "en" ? "MISSIONS" : "МИССИИ"}
         sub="ОРКЕСТРАЦИЯ · 6 в работе · 1 в очереди · 47 за сутки"
         actions={
@@ -441,7 +441,7 @@ function MiniTimeline() {
  * ════════════════════════════════════════════════════════*/
 function MemoryPage({ lang }) {
   return (
-    <div data-screen-label="04 Memory" style={{ height: "100%", padding: "var(--gap)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+    <div data-screen-label="04 Memory" style={{ minHeight: "100%", padding: "var(--gap)", display: "flex", flexDirection: "column" }}>
       <PageHeader title={lang === "en" ? "MEMORY" : "ПАМЯТЬ"}
         sub="LONG-TERM VECTOR STORE · 2.4M embeddings · 14 indices"
         actions={
@@ -570,7 +570,7 @@ function AnalyticsPage({ lang }) {
   const data3 = useMemo(() => genSpark(12, 0.22, 40), []);
 
   return (
-    <div data-screen-label="05 Analytics" style={{ height: "100%", padding: "var(--gap)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+    <div data-screen-label="05 Analytics" style={{ minHeight: "100%", padding: "var(--gap)", display: "flex", flexDirection: "column" }}>
       <PageHeader title={lang === "en" ? "ANALYTICS" : "АНАЛИТИКА"}
         sub="INSTITUTIONAL TERMINAL · multi-source · realtime"
         actions={
@@ -659,7 +659,7 @@ const WATCH_DATA = [
 function WatchlistPage({ lang }) {
   const [selected, setSelected] = useState(null);
   return (
-    <div data-screen-label="06 Watchlist" style={{ height: "100%", padding: "var(--gap)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+    <div data-screen-label="06 Watchlist" style={{ minHeight: "100%", padding: "var(--gap)", display: "flex", flexDirection: "column" }}>
       <PageHeader title="WATCHLIST"
         sub={`РЫНОК · Bybit live · ${WATCHLIST_COINS.length} активов · КОШЕЛЬКИ · ${WATCH_DATA.length} entities · 3 flagged`}
         actions={
@@ -742,7 +742,7 @@ function WatchRow({ w, onClick }) {
  * ════════════════════════════════════════════════════════*/
 function AlertsPage({ lang }) {
   return (
-    <div data-screen-label="07 Alerts" style={{ height: "100%", padding: "var(--gap)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+    <div data-screen-label="07 Alerts" style={{ minHeight: "100%", padding: "var(--gap)", display: "flex", flexDirection: "column" }}>
       <PageHeader title={lang === "en" ? "ALERTS" : "АЛЕРТЫ"}
         sub="ЦЕНТР УВЕДОМЛЕНИЙ · realtime · severity ≥ INFO · правила·источники"
         actions={
@@ -790,7 +790,7 @@ const REPORTS = [
 
 function ReportsPage({ lang }) {
   return (
-    <div data-screen-label="08 Reports" style={{ height: "100%", padding: "var(--gap)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+    <div data-screen-label="08 Reports" style={{ minHeight: "100%", padding: "var(--gap)", display: "flex", flexDirection: "column" }}>
       <PageHeader title={lang === "en" ? "REPORTS" : "ОТЧЁТЫ"}
         sub="INTELLIGENCE BRIEFS · AI-generated · 47 за 7d"
         actions={
@@ -941,7 +941,7 @@ function ApiKeysCard() {
 
 function SettingsPage({ lang }) {
   return (
-    <div data-screen-label="09 Settings" style={{ height: "100%", padding: "var(--gap)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+    <div data-screen-label="09 Settings" style={{ minHeight: "100%", padding: "var(--gap)", display: "flex", flexDirection: "column" }}>
       <PageHeader title={lang === "en" ? "SETTINGS" : "НАСТРОЙКИ"}
         sub="ENVIRONMENT · KEYS · MODELS · INFRASTRUCTURE"
         actions={<><button className="btn">Reset</button><button className="btn btn-accent">Сохранить</button></>}

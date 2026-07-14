@@ -106,7 +106,7 @@ function AnalystPage({ lang }) {
   useEffect(() => { generate(); }, []); // auto-run on open
 
   return (
-    <div data-screen-label="14 Analyst" style={{ height: "100%", padding: "var(--gap)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+    <div data-screen-label="14 Analyst" style={{ minHeight: "100%", padding: "var(--gap)", display: "flex", flexDirection: "column" }}>
       <PageHeader title={lang === "en" ? "TRADING ANALYST" : "АНАЛИТИК · ДНЕВНОЙ ОТЧЁТ"}
         sub={`AI-агент · синтез live-данных Bybit · ${ANALYST_COINS.length} активов · стратегии в симуляции`}
         actions={

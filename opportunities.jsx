@@ -984,8 +984,8 @@ function OpportunitiesPage({ lang }) {
 
   return (
     <div data-screen-label="11 Opportunities" style={{
-      height: "100%", padding: "var(--gap)",
-      display: "flex", flexDirection: "column", overflow: "hidden",
+      minHeight: "100%", padding: "var(--gap)",
+      display: "flex", flexDirection: "column",
     }}>
       <PageHeader title={lang === "en" ? "OPPORTUNITIES" : "ВОЗМОЖНОСТИ"}
         sub="AIRDROPS · SCAM-SCANNER · PRESALES · AI-анализ риска и потенциала"

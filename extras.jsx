@@ -478,7 +478,7 @@ function AnalyticsPageEnhanced({ lang }) {
   const bestAsk = orderbook.asks[0] ? orderbook.asks[0][0] : price;
 
   return (
-    <div data-screen-label="05 Analytics" style={{ height: "100%", padding: "var(--gap)", display: "flex", flexDirection: "column", overflow: "hidden", animation: "pageIn 0.25s ease-out" }}>
+    <div data-screen-label="05 Analytics" style={{ minHeight: "100%", padding: "var(--gap)", display: "flex", flexDirection: "column", animation: "pageIn 0.25s ease-out" }}>
       <PageHeader title={lang === "en" ? "ANALYTICS" : "АНАЛИТИКА"}
         sub="INSTITUTIONAL TERMINAL · BTC/USDT · Bybit realtime"
         actions={
