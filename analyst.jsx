@@ -23,12 +23,12 @@ function anFmtPrice(n) {
   return n.toFixed(4);
 }
 
-async function gatherAnalystData() {
+async function gatherAnalystData(interval = "15") {
   const out = [];
   await Promise.all(ANALYST_COINS.map(async c => {
     try {
       const [kl, tk, lin, ls] = await Promise.all([
-        bybitFetchKlines(c.bybit, "15", 200),
+        bybitFetchKlines(c.bybit, interval, 200),
         bybitFetchTicker(c.bybit).catch(() => null),
         (typeof bybitFetchLinearStats === "function" ? bybitFetchLinearStats(c.bybit) : Promise.resolve(null)).catch(() => null),
         (typeof bybitFetchLongShort === "function" ? bybitFetchLongShort(c.bybit) : Promise.resolve(null)).catch(() => null),

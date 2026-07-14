@@ -293,4 +293,4 @@ function TradePlanChart({ candles, ema, st, plan, width = 880, height = 260 }) {
   );
 }
 
-Object.assign(window, { TradePlanPage, buildTradePlan });
+Object.assign(window, { TradePlanPage, buildTradePlan, TradePlanChart, tpFmt });
