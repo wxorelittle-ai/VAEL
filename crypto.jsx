@@ -502,15 +502,15 @@ function CryptoSignalsPanel({ lang }) {
   const restInterval = TFC.kind === "sec" ? "1" : TFC.base;
   const restLimit = TFC.kind === "agg" ? Math.min(1000, TFC.mult * 350) : 400;
   const market = useBybitMarket(asset.bybit, restInterval, restLimit, cat);
-  const secCandles = useSecondCandles(asset.bybit, TFC.kind === "sec" ? TFC.seconds : 0, cat);
+  const sec = useSecondCandles(asset.bybit, TFC.kind === "sec" ? TFC.seconds : 0, cat);
 
   const candles = useMemo(() => {
-    if (TFC.kind === "sec") return secCandles;
+    if (TFC.kind === "sec") return sec.candles;
     if (TFC.kind === "agg") return aggregateCandles(market.candles, TFC.baseMs, TFC.mult);
     return market.candles;
-  }, [TFC, market.candles, secCandles]);
+  }, [TFC, market.candles, sec.candles]);
   const ticker = market.ticker;
-  const status = TFC.kind === "sec" ? (secCandles.length ? "live" : "connecting") : market.status;
+  const status = TFC.kind === "sec" ? (sec.candles.length ? "live" : "connecting") : market.status;
 
   const VIEW = 120;
   const [viewOffset, setViewOffset] = useState(0);   // candles back from the live edge
@@ -998,8 +998,10 @@ function CryptoSignalsPanel({ lang }) {
           );
         })}
         {TFC.kind === "sec" && (
-          <span className="mono" style={{ fontSize: 9, color: "var(--amber)", marginLeft: 6 }}>
-            ● строится вживую ({candles.length} св) · истории у биржи нет
+          <span className="mono" style={{ fontSize: 9, marginLeft: 6, color: sec.source === "binance" ? "var(--blue)" : "var(--amber)" }}>
+            {sec.source === "binance"
+              ? `● секунды · Binance 1s (${candles.length} св) — у Bybit их нет`
+              : `● строится вживую (${candles.length} св) · нет на Binance → без истории`}
           </span>
         )}
         <button onClick={findEntry} style={{

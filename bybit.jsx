@@ -41,39 +41,79 @@ function aggregateCandles(candles, baseMs, mult) {
   return [...map.values()].sort((a, b) => a.start - b.start);
 }
 
-/* ── Second-level candles. Bybit has NO sub-minute klines, so there is no history
- * to fetch — we build them live from the public trade stream. The chart starts
- * empty and fills as trades arrive. Honest limitation, not a bug. ── */
+/* ── Second-level candles.
+ * Bybit has NO sub-minute klines ("Invalid period!") and its recent-trade feed
+ * only reaches ~1 minute back — so it cannot give a seconds chart with history.
+ * Binance DOES serve native 1-second klines, so we source seconds from there:
+ * paginated 1s history → bucketed into the requested second interval → kept live
+ * off Binance's 1s kline stream. If Binance doesn't list the symbol (e.g. a
+ * Bybit-only perp), we fall back to building candles live from Bybit trades
+ * (no history in that case — stated in the UI). ── */
+const BINANCE_REST = "https://api.binance.com";
+const BINANCE_WS = "wss://stream.binance.com:9443/ws";
+
+async function binanceFetch1s(symbol, needed) {
+  const acc = new Map();
+  let endTime;
+  const pages = Math.max(1, Math.min(6, Math.ceil(needed / 1000)));
+  for (let p = 0; p < pages; p++) {
+    const url = `${BINANCE_REST}/api/v3/klines?symbol=${symbol}&interval=1s&limit=1000${endTime ? `&endTime=${endTime}` : ""}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`binance ${res.status}`);
+    const j = await res.json();
+    if (!Array.isArray(j) || !j.length) break;
+    j.forEach(k => acc.set(+k[0], { start: +k[0], open: +k[1], hi: +k[2], lo: +k[3], close: +k[4], v: +k[5] }));
+    endTime = +j[0][0] - 1;
+    if (j.length < 1000) break;
+  }
+  return [...acc.values()].sort((a, b) => a.start - b.start);
+}
+
 function useSecondCandles(symbol, seconds, category = "spot", maxCandles = 400) {
   const [candles, setCandles] = useState([]);
+  const [source, setSource] = useState(null);          // "binance" | "live" | null
   const bufRef = useRef([]);
 
   useEffect(() => {
-    if (!seconds) return;
+    if (!seconds) { setCandles([]); setSource(null); return; }
     let cancelled = false, ws = null, pingId = null, reconnectId = null;
     const bucketMs = seconds * 1000;
     bufRef.current = [];
-    setCandles([]);
+    setCandles([]); setSource(null);
 
-    const push = (price, size, ts) => {
-      const key = Math.floor(ts / bucketMs) * bucketMs;
+    /* merge one point (a trade, or a finished/forming 1s candle) into its bucket */
+    const merge = ({ start, open, hi, lo, close, v }) => {
+      const key = Math.floor(start / bucketMs) * bucketMs;
       const arr = bufRef.current;
       const last = arr[arr.length - 1];
       if (last && last.start === key) {
-        last.hi = Math.max(last.hi, price);
-        last.lo = Math.min(last.lo, price);
-        last.close = price;
-        last.v += size;
+        last.hi = Math.max(last.hi, hi); last.lo = Math.min(last.lo, lo);
+        last.close = close; last.v += v;
       } else if (!last || key > last.start) {
-        arr.push({ start: key, open: price, hi: price, lo: price, close: price, v: size });
+        arr.push({ start: key, open, hi, lo, close, v });
         if (arr.length > maxCandles) arr.shift();
       }
       if (!cancelled) setCandles(arr.slice());
     };
 
-    function connect() {
+    function connectBinance() {
+      const stream = `${BINANCE_WS}/${symbol.toLowerCase()}@kline_1s`;
+      try { ws = new WebSocket(stream); }
+      catch { reconnectId = setTimeout(connectBinance, 3000); return; }
+      ws.onmessage = ev => {
+        if (cancelled) return;
+        let m; try { m = JSON.parse(ev.data); } catch { return; }
+        const k = m && m.k;
+        if (!k) return;
+        merge({ start: +k.t, open: +k.o, hi: +k.h, lo: +k.l, close: +k.c, v: +k.v });
+      };
+      ws.onclose = () => { if (!cancelled) reconnectId = setTimeout(connectBinance, 2500); };
+      ws.onerror = () => { try { ws.close(); } catch (_) {} };
+    }
+
+    function connectBybitTrades() {
       try { ws = new WebSocket(bybitWsUrl(category)); }
-      catch { reconnectId = setTimeout(connect, 3000); return; }
+      catch { reconnectId = setTimeout(connectBybitTrades, 3000); return; }
       ws.onopen = () => {
         ws.send(JSON.stringify({ op: "subscribe", args: [`publicTrade.${symbol}`] }));
         pingId = setInterval(() => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ op: "ping" })); }, 20000);
@@ -82,12 +122,30 @@ function useSecondCandles(symbol, seconds, category = "spot", maxCandles = 400) 
         if (cancelled) return;
         let msg; try { msg = JSON.parse(ev.data); } catch { return; }
         if (!msg.topic || msg.topic.indexOf("publicTrade.") !== 0) return;
-        (msg.data || []).forEach(t => push(+t.p, +t.v, +t.T));
+        (msg.data || []).forEach(t => {
+          const p = +t.p;
+          merge({ start: +t.T, open: p, hi: p, lo: p, close: p, v: +t.v });
+        });
       };
-      ws.onclose = () => { clearInterval(pingId); if (!cancelled) reconnectId = setTimeout(connect, 2500); };
+      ws.onclose = () => { clearInterval(pingId); if (!cancelled) reconnectId = setTimeout(connectBybitTrades, 2500); };
       ws.onerror = () => { try { ws.close(); } catch (_) {} };
     }
-    connect();
+
+    (async () => {
+      try {
+        const k1 = await binanceFetch1s(symbol, Math.min(6000, seconds * 220));
+        if (cancelled) return;
+        if (!k1.length) throw new Error("empty");
+        bufRef.current = aggregateCandles(k1, 1000, seconds).slice(-maxCandles);
+        setCandles(bufRef.current.slice());
+        setSource("binance");
+        connectBinance();
+      } catch (_) {
+        if (cancelled) return;
+        setSource("live");           // symbol not on Binance → live-only, no history
+        connectBybitTrades();
+      }
+    })();
 
     return () => {
       cancelled = true;
@@ -96,7 +154,7 @@ function useSecondCandles(symbol, seconds, category = "spot", maxCandles = 400) 
     };
   }, [symbol, seconds, category, maxCandles]);
 
-  return candles;
+  return { candles, source };
 }
 
 /* ── Leverage-tradable universe: every linear perpetual on Bybit (incl. memecoins),
@@ -579,6 +637,6 @@ Object.assign(window, {
   bybitFetchOrderbook, bybitFetchRecentTrades, useBybitOrderbook, useBybitTrades, useBybitL2,
   bybitFetchLinearStats, useBybitLinearStats, bybitFetchLongShort, useBybitLongShort,
   useMarketMetrics, bybitFetchLeverageUniverse,
-  aggregateCandles, useSecondCandles,
-  BYBIT_REST, BYBIT_WS_SPOT, BYBIT_WS_LINEAR,
+  aggregateCandles, useSecondCandles, binanceFetch1s,
+  BYBIT_REST, BYBIT_WS_SPOT, BYBIT_WS_LINEAR, BINANCE_REST,
 });
