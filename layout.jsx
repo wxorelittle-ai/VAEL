@@ -1,22 +1,19 @@
 /* layout.jsx — Sidebar + TopBar */
 
+/* Main nav stays focused on trading. Agents / Missions / Scenarios / Memory /
+ * Smart Money moved into Settings → «Разделы системы» (routes still work). */
 const NAV_ITEMS = [
   { id: "dashboard", ru: "Дашборд",     en: "Dashboard",     glyph: "◐" },
   { id: "brain",     ru: "AI Мозг",     en: "AI Brain",      glyph: "❂" },
   { id: "plan",      ru: "Trade Plan",  en: "Trade Plan",    glyph: "⌖" },
   { id: "portfolio", ru: "Портфель",    en: "Portfolio",     glyph: "◑" },
-  { id: "smart",     ru: "Smart Money", en: "Smart Money",   glyph: "♕" },
-  { id: "agents",    ru: "Агенты",      en: "Agents",        glyph: "⬢" },
-  { id: "missions",  ru: "Миссии",      en: "Missions",      glyph: "▶" },
-  { id: "scenarios", ru: "Сценарии",    en: "Scenarios",     glyph: "⟁", noEmoji: "⟁" },
-  { id: "opps",      ru: "Возможности", en: "Opportunities", glyph: "◈" },
   { id: "pairs",     ru: "Парный трейдинг", en: "Pair Trading", glyph: "⇄" },
   { id: "daily",     ru: "Тренд-агент",  en: "Trend Agent",   glyph: "◎" },
+  { id: "opps",      ru: "Возможности", en: "Opportunities", glyph: "◈" },
   { id: "airdrops",  ru: "Airdrop радар",en: "Airdrop Radar", glyph: "◇" },
   { id: "freedrops", ru: "Free Airdrops",en: "Free Airdrops", glyph: "❋" },
-  { id: "memory",    ru: "Память",      en: "Memory",        glyph: "❖" },
-  { id: "analytics", ru: "Аналитика",   en: "Analytics",     glyph: "📈", noEmoji: "▲" },
   { id: "analyst",   ru: "Аналитик",    en: "Analyst",       glyph: "✦" },
+  { id: "analytics", ru: "Аналитика",   en: "Analytics",     glyph: "📈", noEmoji: "▲" },
   { id: "watchlist", ru: "Watchlist",   en: "Watchlist",     glyph: "◉" },
   { id: "alerts",    ru: "Алерты",      en: "Alerts",        glyph: "!" },
   { id: "reports",   ru: "Отчёты",      en: "Reports",       glyph: "▤" },

@@ -943,45 +943,49 @@ function SettingsPage({ lang }) {
   return (
     <div data-screen-label="09 Settings" style={{ minHeight: "100%", padding: "var(--gap)", display: "flex", flexDirection: "column" }}>
       <PageHeader title={lang === "en" ? "SETTINGS" : "НАСТРОЙКИ"}
-        sub="ENVIRONMENT · KEYS · MODELS · INFRASTRUCTURE"
-        actions={<><button className="btn">Reset</button><button className="btn btn-accent">Сохранить</button></>}
+        sub="API-КЛЮЧИ · РАЗДЕЛЫ СИСТЕМЫ"
       />
-      <div className="scroll" style={{ flex: 1, display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--gap)", overflow: "auto", paddingRight: 4, minHeight: 0 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: "var(--gap)", alignItems: "start" }}>
         <ApiKeysCard />
-        <SettingsCard title="МОДЕЛИ">
-          <KvRow k="planner.model"  v="gpt-4o (chain-of-thought)" status="ok" />
-          <KvRow k="critic.model"   v="claude-3.5-sonnet" status="ok" />
-          <KvRow k="embed.model"    v="bge-m3 (1024 dim)" status="ok" />
-          <KvRow k="news.model"     v="local · v6-news-2" status="ok" />
-          <KvRow k="forecast.model" v="v6-forecast-rc2" status="warn" />
-        </SettingsCard>
-        <SettingsCard title="WEBSOCKET">
-          <KvRow k="endpoint" v="wss://kernel.v6/stream" status="ok" />
-          <KvRow k="heartbeat" v="30s" />
-          <KvRow k="reconnect" v="exponential · max 8" />
-          <KvRow k="latency" v="42ms · 99p 88ms" status="ok" />
-        </SettingsCard>
-        <SettingsCard title="INFRASTRUCTURE">
-          <KvRow k="Supabase" v="ACTIVE · eu-central-1" status="ok" />
-          <KvRow k="Render"   v="ACTIVE · 4 services" status="ok" />
-          <KvRow k="Vercel"   v="ACTIVE · prod" status="ok" />
-          <KvRow k="Postgres" v="142 connections / 200" status="ok" />
-          <KvRow k="Redis"    v="OK · 4.2GB / 8GB" status="ok" />
-        </SettingsCard>
-        <SettingsCard title="ENVIRONMENT">
-          <KvRow k="NODE_ENV" v="production" />
-          <KvRow k="LOG_LEVEL" v="info" />
-          <KvRow k="ORCHESTRATOR" v="v6.2.41" />
-          <KvRow k="MAX_CONCURRENT_MISSIONS" v="14" />
-          <KvRow k="EMBEDDING_DIM" v="1024" />
-        </SettingsCard>
-        <SettingsCard title="ТЕМА И ИНТЕРФЕЙС">
-          <KvRow k="theme" v="dark · cyan" />
-          <KvRow k="density" v="standard" />
-          <KvRow k="lang" v="ru-RU" />
-          <KvRow k="motion" v="reduced · auto" />
-          <KvRow k="sound" v="muted" />
-        </SettingsCard>
+        <SystemSectionsCard />
+      </div>
+    </div>
+  );
+}
+
+/* Secondary screens live here now — the main sidebar stays focused on trading. */
+const SYSTEM_SECTIONS = [
+  { id: "agents",    glyph: "⬢", ru: "Агенты",      desc: "сетка агентов, статусы, нагрузка" },
+  { id: "missions",  glyph: "▶", ru: "Миссии",      desc: "очередь задач и прогресс выполнения" },
+  { id: "scenarios", glyph: "⟁", ru: "Сценарии",    desc: "what-if лаборатория рыночных событий" },
+  { id: "memory",    glyph: "❖", ru: "Память",      desc: "векторный индекс и граф связей" },
+  { id: "smart",     glyph: "♕", ru: "Smart Money", desc: "топ-кошельки и копи-трейдинг" },
+];
+
+function SystemSectionsCard() {
+  return (
+    <div className="panel" style={{ display: "flex", flexDirection: "column" }}>
+      <PanelHeader title="РАЗДЕЛЫ СИСТЕМЫ" meta="вынесены из основного меню" />
+      <div style={{ padding: "6px 0" }}>
+        {SYSTEM_SECTIONS.map(s => (
+          <button key={s.id} onClick={() => window.__navTo?.(s.id)} style={{
+            width: "100%", display: "grid", gridTemplateColumns: "26px 1fr auto",
+            gap: 10, alignItems: "center", padding: "9px 14px",
+            background: "transparent", border: "none", borderBottom: "1px solid var(--line)",
+            cursor: "pointer", textAlign: "left",
+          }}>
+            <span style={{
+              width: 22, height: 22, borderRadius: 3, display: "flex", alignItems: "center", justifyContent: "center",
+              background: "var(--bg-0)", border: "1px solid var(--line-bright)", color: "var(--accent)",
+              fontFamily: "var(--font-mono)", fontSize: 11,
+            }}>{s.glyph}</span>
+            <span style={{ minWidth: 0 }}>
+              <span style={{ display: "block", fontSize: 12, color: "var(--text-bright)", fontWeight: 500 }}>{s.ru}</span>
+              <span style={{ display: "block", fontSize: 10.5, color: "var(--text-dim)", marginTop: 1 }}>{s.desc}</span>
+            </span>
+            <span style={{ color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: 12 }}>›</span>
+          </button>
+        ))}
       </div>
     </div>
   );
