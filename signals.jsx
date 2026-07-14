@@ -475,6 +475,45 @@ function taPpo(values, fast = 12, slow = 26) {
   return es ? (ef - es) / es * 100 : 0;
 }
 
+/* Candlestick pattern recognition → [{ idx, name, ru, bias }] over the last
+ * `lookback` candles. Detects reversal/indecision shapes: engulfing, hammer,
+ * shooting star, doji. Own implementation; pattern *ideas* are public TA.
+ * bias: "bull" | "bear" | "neutral". */
+function taCandlePatterns(candles, lookback = 50) {
+  const n = candles ? candles.length : 0;
+  const out = [];
+  if (n < 5) return out;
+  const start = Math.max(3, n - lookback);
+  for (let i = start; i < n; i++) {
+    const c = candles[i], p = candles[i - 1];
+    const body = Math.abs(c.close - c.open);
+    const range = (c.hi - c.lo) || 1e-9;
+    const upper = c.hi - Math.max(c.open, c.close);
+    const lower = Math.min(c.open, c.close) - c.lo;
+    const trendUp = candles[i - 1].close > candles[i - 3].close;
+    const trendDn = candles[i - 1].close < candles[i - 3].close;
+    const pRed = p.close < p.open, pGreen = p.close > p.open;
+    const cGreen = c.close > c.open, cRed = c.close < c.open;
+
+    if (cGreen && pRed && c.close >= p.open && c.open <= p.close && body > 0) {
+      out.push({ idx: i, name: "bull_engulf", ru: "Бычье поглощение", bias: "bull" }); continue;
+    }
+    if (cRed && pGreen && c.open >= p.close && c.close <= p.open && body > 0) {
+      out.push({ idx: i, name: "bear_engulf", ru: "Медвежье поглощение", bias: "bear" }); continue;
+    }
+    if (lower >= body * 2 && upper <= body * 0.6 && body > 0 && trendDn) {
+      out.push({ idx: i, name: "hammer", ru: "Молот", bias: "bull" }); continue;
+    }
+    if (upper >= body * 2 && lower <= body * 0.6 && body > 0 && trendUp) {
+      out.push({ idx: i, name: "shooting_star", ru: "Падающая звезда", bias: "bear" }); continue;
+    }
+    if (body <= range * 0.1) {
+      out.push({ idx: i, name: "doji", ru: "Дожи", bias: "neutral" }); continue;
+    }
+  }
+  return out;
+}
+
 /* Attribute a signal to the agent whose domain drove it (cosmetic, but honest) */
 function agentForSignal(a) {
   const macdTurn = a.macd && ((a.side === "buy" && a.macd.hist > 0 && a.macd.histPrev <= 0) ||
@@ -546,6 +585,12 @@ function analyzeMarket(candles) {
   if (st.flipUp) { score += 0.6; reasons.push("свежий разворот Supertrend ↗"); }
   else if (st.flipDown) { score -= 0.6; reasons.push("свежий разворот Supertrend ↘"); }
 
+  // 7) Candlestick pattern on the current candle — light confluence
+  const pats = typeof taCandlePatterns === "function" ? taCandlePatterns(candles, 3) : [];
+  const lastPat = pats.length && pats[pats.length - 1].idx === n - 1 ? pats[pats.length - 1] : null;
+  if (lastPat && lastPat.bias === "bull") { score += 0.5; reasons.push(`свечной паттерн: ${lastPat.ru}`); }
+  else if (lastPat && lastPat.bias === "bear") { score -= 0.5; reasons.push(`свечной паттерн: ${lastPat.ru}`); }
+
   const side = score >= 0 ? "buy" : "sell";
   const aligned = (side === "buy" && trendDir >= 0) || (side === "sell" && trendDir <= 0);
   const strength = Math.min(1, Math.abs(score) / 5.4);
@@ -562,9 +607,9 @@ function analyzeMarket(candles) {
 
   const a = {
     side, score, confidence, setup, aligned,
-    reasons: reasons.slice(0, 5),
+    reasons: reasons.slice(0, 6),
     rsi, emaF, emaS, ema50, macd, atr, atrPct, mom, volRatio,
-    supertrend: st.value, stDir: st.dir,
+    supertrend: st.value, stDir: st.dir, pattern: lastPat ? lastPat.ru : null,
     trendUp: trendDir > 0, trendDir, sl, tp, rr: 1.8,
   };
   a.agent = agentForSignal(a);
@@ -659,4 +704,5 @@ Object.assign(window, {
   taKeltner, taDonchian, taObv, taRoc,
   taAroon, taVortex, taTrix, taCmf,
   taUltimate, taFisher, taElderRay, taPpo,
+  taCandlePatterns,
 });

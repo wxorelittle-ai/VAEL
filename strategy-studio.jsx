@@ -35,6 +35,7 @@ const INDICATOR_TYPES = [
   { id: "fisher",     ru: "Fisher Transform",     params: ["period"], defaults: { period: 9 } },
   { id: "elder",      ru: "Elder Ray",            params: ["period"], defaults: { period: 13 } },
   { id: "ppo",        ru: "PPO",                  params: ["fast", "slow"], defaults: { fast: 12, slow: 26 } },
+  { id: "patterns",   ru: "Свечные паттерны",     params: [],         defaults: {} },
   { id: "vwap",       ru: "VWAP",                 params: [],         defaults: {} },
   { id: "vol",        ru: "Volume Profile",       params: ["window"], defaults: { window: 24 } },
   { id: "atr",        ru: "ATR (волатильность)",  params: ["period"], defaults: { period: 14 } },
@@ -418,6 +419,30 @@ const STRATEGY_PRESETS = [
       entry: [
         { uid: "e1", left: "fs01", op: "cross_above", right: "value", rightValue: 0, connector: null },
         { uid: "e2", left: "price", op: "gt", right: "em12", connector: "AND" },
+      ],
+      exit: { type: "tp_sl", tp: 5, sl: 3, trailing: 2, candles: 24 },
+      sizing: "pct",
+    }),
+  },
+  {
+    key: "candle_rev",
+    title: "Candle Reversal + RSI",
+    tag: "возврат",
+    desc: "Бычий свечной разворот (Молот / Бычье поглощение) при RSI<40 и цене над EMA50 — вход по подтверждённому развороту.",
+    build: () => ({
+      ...makeNewStrategy(),
+      name: "Candle Reversal + RSI · 1h",
+      sources: ["price"],
+      indicators: [
+        { uid: "pt01", id: "patterns", params: {} },
+        { uid: "rs04", id: "rsi", params: { period: 14 } },
+        { uid: "em13", id: "ema", params: { period: 50 } },
+      ],
+      side: "buy", minConfidence: 73,
+      entry: [
+        { uid: "e1", left: "pt01", op: "gt", right: "value", rightValue: 0, connector: null },
+        { uid: "e2", left: "rs04", op: "lt", right: "value", rightValue: 40, connector: "AND" },
+        { uid: "e3", left: "price", op: "gt", right: "em13", connector: "AND" },
       ],
       exit: { type: "tp_sl", tp: 5, sl: 3, trailing: 2, candles: 24 },
       sizing: "pct",
@@ -1164,6 +1189,12 @@ function StrategyPreview({ strategy, asset, step }) {
     return out;
   }, [candles, strategy.indicators]);
 
+  const pats = useMemo(() => {
+    const has = strategy.indicators.find(i => i.id === "patterns");
+    if (!has || !chartCandles.length || typeof taCandlePatterns !== "function") return null;
+    return taCandlePatterns(chartCandles, chartCandles.length);
+  }, [chartCandles, strategy.indicators]);
+
   const s = bt ? bt.stats : null;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -1172,7 +1203,7 @@ function StrategyPreview({ strategy, asset, step }) {
         <div style={{ background: "var(--bg-1)", border: "1px solid var(--line)", borderRadius: 4, padding: 8 }}>
           {loading
             ? <div style={{ height: 200, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: 11 }}>загрузка свечей Bybit…</div>
-            : <PreviewChart candles={chartCandles} ema={ema} st={st} bb={bb} psar={psar} ichi={ichi} chan={chan} markers={chartMarkers} width={400} height={200} />}
+            : <PreviewChart candles={chartCandles} ema={ema} st={st} bb={bb} psar={psar} ichi={ichi} chan={chan} pats={pats} markers={chartMarkers} width={400} height={200} />}
           {rsi && !loading && (
             <div style={{ marginTop: 4 }}>
               <div style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--text-dim)", marginBottom: 2 }}>RSI {strategy.indicators.find(i => i.id === "rsi").params.period}</div>
@@ -1217,7 +1248,7 @@ function StrategyPreview({ strategy, asset, step }) {
   );
 }
 
-function PreviewChart({ candles, ema, st, bb, psar, ichi, chan, markers, width = 400, height = 200 }) {
+function PreviewChart({ candles, ema, st, bb, psar, ichi, chan, pats, markers, width = 400, height = 200 }) {
   const lows = candles.map(c => c.lo), highs = candles.map(c => c.hi);
   const stVals = st ? st.map(p => p.v).filter(v => isFinite(v) && v > 0) : [];
   const bbVals = bb ? bb.flatMap(p => [p.upper, p.lower]).filter(v => isFinite(v) && v > 0) : [];
@@ -1319,6 +1350,14 @@ function PreviewChart({ candles, ema, st, bb, psar, ichi, chan, markers, width =
               fill={p.dir > 0 ? "var(--green)" : "var(--red)"} opacity={0.85} />
           : null
       ))}
+      {pats && pats.map((pt, i) => {
+        const cx = pt.idx * stepX + stepX / 2;
+        const c = candles[pt.idx];
+        if (!c) return null;
+        const color = pt.bias === "bull" ? "var(--green)" : pt.bias === "bear" ? "var(--red)" : "var(--amber)";
+        const yPos = pt.bias === "bear" ? y(c.hi) - 6 : y(c.lo) + 6;
+        return <circle key={`pt${i}`} cx={cx} cy={yPos} r={1.6} fill={color} opacity={0.9} />;
+      })}
       {markers.map((m, i) => {
         const cx = m.idx * stepX + stepX / 2;
         const cy = y(m.price);
