@@ -367,6 +367,60 @@ function taRoc(values, period = 12) {
   return past ? (values[n - 1] - past) / past * 100 : 0;
 }
 
+/* Aroon(period) → { up, down, osc } (0..100). Measures bars since the period's
+ * high/low; up>70 & down<30 = strong uptrend. osc = up−down. Own implementation. */
+function taAroon(candles, period = 25) {
+  const n = candles ? candles.length : 0;
+  if (n < period + 1) return { up: 50, down: 50, osc: 0 };
+  let hi = -Infinity, lo = Infinity, hiIdx = n - 1, loIdx = n - 1;
+  for (let i = n - period - 1; i < n; i++) {
+    if (candles[i].hi >= hi) { hi = candles[i].hi; hiIdx = i; }
+    if (candles[i].lo <= lo) { lo = candles[i].lo; loIdx = i; }
+  }
+  const up = 100 * (period - ((n - 1) - hiIdx)) / period;
+  const down = 100 * (period - ((n - 1) - loIdx)) / period;
+  return { up, down, osc: up - down };
+}
+
+/* Vortex Indicator(period) → { plus, minus }. VI+ crossing above VI− = bullish
+ * trend start. Own implementation. */
+function taVortex(candles, period = 14) {
+  const n = candles ? candles.length : 0;
+  if (n < period + 1) return { plus: 1, minus: 1 };
+  let vmPlus = 0, vmMinus = 0, tr = 0;
+  for (let i = n - period; i < n; i++) {
+    const c = candles[i], p = candles[i - 1];
+    vmPlus += Math.abs(c.hi - p.lo);
+    vmMinus += Math.abs(c.lo - p.hi);
+    tr += Math.max(c.hi - c.lo, Math.abs(c.hi - p.close), Math.abs(c.lo - p.close));
+  }
+  return { plus: tr ? vmPlus / tr : 1, minus: tr ? vmMinus / tr : 1 };
+}
+
+/* TRIX(period) → % ROC of a triple-smoothed EMA. Zero-cross momentum, filters noise.
+ * Own implementation. */
+function taTrix(values, period = 15) {
+  const n = values ? values.length : 0;
+  if (n < period * 3) return 0;
+  const e3 = taEmaSeries(taEmaSeries(taEmaSeries(values, period), period), period);
+  const m = e3.length, prev = e3[m - 2];
+  return prev ? (e3[m - 1] - prev) / prev * 100 : 0;
+}
+
+/* Chaikin Money Flow(period) → −1..+1. Volume-weighted accumulation/distribution;
+ * >0 buying pressure, <0 selling. Own implementation. */
+function taCmf(candles, period = 20) {
+  const n = candles ? candles.length : 0;
+  if (n < period) return 0;
+  let mfv = 0, vol = 0;
+  for (let i = n - period; i < n; i++) {
+    const c = candles[i], range = c.hi - c.lo;
+    mfv += (range ? ((c.close - c.lo) - (c.hi - c.close)) / range : 0) * (c.v || 0);
+    vol += c.v || 0;
+  }
+  return vol ? mfv / vol : 0;
+}
+
 /* Attribute a signal to the agent whose domain drove it (cosmetic, but honest) */
 function agentForSignal(a) {
   const macdTurn = a.macd && ((a.side === "buy" && a.macd.hist > 0 && a.macd.histPrev <= 0) ||
@@ -549,4 +603,5 @@ Object.assign(window, {
   taCci, taParabolicSar, taAwesome,
   taStochastic, taWilliamsR, taMfi, taIchimoku,
   taKeltner, taDonchian, taObv, taRoc,
+  taAroon, taVortex, taTrix, taCmf,
 });
