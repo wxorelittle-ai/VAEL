@@ -885,9 +885,62 @@ function pairAnalysis(candlesA, candlesB, window = 50) {
   };
 }
 
+/* ─────────────────────────────────────────────────────────
+ * Daily trend agent — walks the TA engine (analyzeMarket) forward over a window
+ * of candles, opens a simulated demo trade on every genuine setup, tracks the
+ * outcome with the signal's own ATR SL/TP, and reports the trend, the full trade
+ * log, an equity curve, and how much a fixed demo deposit would have made.
+ * All grounded in real Bybit candles — this is a backtest of the live engine.
+ * ────────────────────────────────────────────────────────*/
+function dailyAgentSim(candles, notional = 1000) {
+  if (!candles || candles.length < 60 || typeof analyzeMarket !== "function") return null;
+  const closes = candles.map(c => c.close);
+  const first = closes[0], lastC = closes[closes.length - 1];
+  const ema50 = taEma(closes, 50);
+  const chgPct = (lastC - first) / first * 100;
+
+  const H = 16;                 // max hold in candles
+  const riskFrac = 0.02;        // 2% of equity risked per trade
+  let equity = notional, wins = 0, losses = 0;
+  const trades = [], curve = [{ t: candles[0].start, v: equity }];
+  let i = 55;
+  while (i <= candles.length - 2) {
+    const a = analyzeMarket(candles.slice(0, i + 1));
+    if (!a || !a.setup) { i++; continue; }
+    const entry = candles[i].close, side = a.side;
+    const sl = a.sl, tp = a.tp;
+    const slD = Math.abs(entry - sl) || entry * 0.004;
+    const rr = Math.abs(tp - entry) / slD;
+    let R = null, exitIdx = Math.min(i + H, candles.length - 1);
+    for (let j = i + 1; j <= Math.min(i + H, candles.length - 1); j++) {
+      const c = candles[j];
+      if (side === "buy") { if (c.lo <= sl) { R = -1; exitIdx = j; break; } if (c.hi >= tp) { R = rr; exitIdx = j; break; } }
+      else { if (c.hi >= sl) { R = -1; exitIdx = j; break; } if (c.lo <= tp) { R = rr; exitIdx = j; break; } }
+    }
+    if (R === null) { const xp = closes[exitIdx]; const mv = side === "buy" ? xp - entry : entry - xp; R = Math.max(-1, Math.min(rr, mv / slD)); }
+    const pnl = R * (equity * riskFrac);
+    equity += pnl;
+    if (R > 0) wins++; else losses++;
+    trades.push({
+      time: candles[i].start, exitTime: candles[exitIdx].start,
+      side, entry, exit: closes[exitIdx], conf: a.confidence,
+      pnl, reason: (a.reasons && a.reasons[0]) || "", win: R > 0,
+    });
+    curve.push({ t: candles[exitIdx].start, v: equity });
+    i = exitIdx + 1;
+  }
+  const n = wins + losses;
+  return {
+    trend: { chgPct, dir: chgPct >= 0 ? "up" : "down", aboveEma: lastC > ema50, price: lastC },
+    trades, curve, notional,
+    windowCandles: candles.length,
+    stats: { trades: n, wins, losses, winRate: n ? wins / n * 100 : 0, profit: equity - notional, roi: (equity - notional) / notional * 100, equity },
+  };
+}
+
 Object.assign(window, {
   analyzeMarket, taEma, taEmaSeries, taRsi, taMacd, taAtr, agentForSignal,
-  monteCarloForecast, pairAnalysis,
+  monteCarloForecast, pairAnalysis, dailyAgentSim,
   taVolAnomaly, computeMarketMetrics,
   taSmaSeries, taRsiSeries, taStochRsi, taSupertrend, taDmi, taBollinger,
   taCci, taParabolicSar, taAwesome,
