@@ -36,6 +36,8 @@ const INDICATOR_TYPES = [
   { id: "elder",      ru: "Elder Ray",            params: ["period"], defaults: { period: 13 } },
   { id: "ppo",        ru: "PPO",                  params: ["fast", "slow"], defaults: { fast: 12, slow: 26 } },
   { id: "patterns",   ru: "Свечные паттерны",     params: [],         defaults: {} },
+  { id: "hull",       ru: "Hull MA",              params: ["period"], defaults: { period: 20 } },
+  { id: "ha",         ru: "Heikin-Ashi",          params: [],         defaults: {} },
   { id: "vwap",       ru: "VWAP",                 params: [],         defaults: {} },
   { id: "vol",        ru: "Volume Profile",       params: ["window"], defaults: { window: 24 } },
   { id: "atr",        ru: "ATR (волатильность)",  params: ["period"], defaults: { period: 14 } },
@@ -445,6 +447,49 @@ const STRATEGY_PRESETS = [
         { uid: "e3", left: "price", op: "gt", right: "em13", connector: "AND" },
       ],
       exit: { type: "tp_sl", tp: 5, sl: 3, trailing: 2, candles: 24 },
+      sizing: "pct",
+    }),
+  },
+  {
+    key: "hull_trend",
+    title: "Hull MA Trend",
+    tag: "тренд",
+    desc: "Малый лаг: цена пробивает Hull MA(20) снизу вверх при подтверждении над EMA50. Быстрый вход в тренд.",
+    build: () => ({
+      ...makeNewStrategy(),
+      name: "Hull MA Trend · 1h",
+      sources: ["price"],
+      indicators: [
+        { uid: "hl01", id: "hull", params: { period: 20 } },
+        { uid: "em14", id: "ema", params: { period: 50 } },
+      ],
+      side: "both", minConfidence: 76,
+      entry: [
+        { uid: "e1", left: "price", op: "cross_above", right: "hl01", connector: null },
+        { uid: "e2", left: "price", op: "gt", right: "em14", connector: "AND" },
+      ],
+      exit: { type: "trailing", tp: 6, sl: 3, trailing: 2, candles: 24 },
+      sizing: "pct",
+    }),
+  },
+  {
+    key: "ha_trend",
+    title: "Heikin-Ashi Trend",
+    tag: "тренд",
+    desc: "Сглаженные свечи: серия зелёных HA-свечей над EMA50 = чистый тренд без шума. Держим, пока цвет не сменится.",
+    build: () => ({
+      ...makeNewStrategy(),
+      name: "Heikin-Ashi Trend · 1h",
+      sources: ["price"],
+      indicators: [
+        { uid: "ha01", id: "ha", params: {} },
+        { uid: "em15", id: "ema", params: { period: 50 } },
+      ],
+      side: "buy", minConfidence: 74,
+      entry: [
+        { uid: "e1", left: "price", op: "gt", right: "em15", connector: null },
+      ],
+      exit: { type: "signal", tp: 6, sl: 3, trailing: 2, candles: 26 },
       sizing: "pct",
     }),
   },
@@ -1195,6 +1240,22 @@ function StrategyPreview({ strategy, asset, step }) {
     return taCandlePatterns(chartCandles, chartCandles.length);
   }, [chartCandles, strategy.indicators]);
 
+  const hull = useMemo(() => {
+    const has = strategy.indicators.find(i => i.id === "hull");
+    if (!has || candles.length < 30 || typeof taHull !== "function") return null;
+    const period = has.params?.period || 20;
+    const closes = candles.map(c => c.close);
+    const out = [];
+    for (let idx = candles.length - 50; idx < candles.length; idx++) out.push(taHull(closes.slice(0, idx + 1), period));
+    return out;
+  }, [candles, strategy.indicators]);
+
+  const haCandles = useMemo(() => {
+    const has = strategy.indicators.find(i => i.id === "ha");
+    if (!has || !chartCandles.length || typeof taHeikinAshi !== "function") return null;
+    return taHeikinAshi(chartCandles);
+  }, [chartCandles, strategy.indicators]);
+
   const s = bt ? bt.stats : null;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -1203,7 +1264,7 @@ function StrategyPreview({ strategy, asset, step }) {
         <div style={{ background: "var(--bg-1)", border: "1px solid var(--line)", borderRadius: 4, padding: 8 }}>
           {loading
             ? <div style={{ height: 200, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: 11 }}>загрузка свечей Bybit…</div>
-            : <PreviewChart candles={chartCandles} ema={ema} st={st} bb={bb} psar={psar} ichi={ichi} chan={chan} pats={pats} markers={chartMarkers} width={400} height={200} />}
+            : <PreviewChart candles={chartCandles} ema={ema} st={st} bb={bb} psar={psar} ichi={ichi} chan={chan} pats={pats} hull={hull} haCandles={haCandles} markers={chartMarkers} width={400} height={200} />}
           {rsi && !loading && (
             <div style={{ marginTop: 4 }}>
               <div style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--text-dim)", marginBottom: 2 }}>RSI {strategy.indicators.find(i => i.id === "rsi").params.period}</div>
@@ -1248,21 +1309,24 @@ function StrategyPreview({ strategy, asset, step }) {
   );
 }
 
-function PreviewChart({ candles, ema, st, bb, psar, ichi, chan, pats, markers, width = 400, height = 200 }) {
-  const lows = candles.map(c => c.lo), highs = candles.map(c => c.hi);
+function PreviewChart({ candles, ema, st, bb, psar, ichi, chan, pats, hull, haCandles, markers, width = 400, height = 200 }) {
+  const drawCandles = haCandles || candles;   // render Heikin-Ashi bodies when enabled
+  const lows = drawCandles.map(c => c.lo), highs = drawCandles.map(c => c.hi);
+  const hullVals = hull ? hull.filter(v => isFinite(v) && v > 0) : [];
   const stVals = st ? st.map(p => p.v).filter(v => isFinite(v) && v > 0) : [];
   const bbVals = bb ? bb.flatMap(p => [p.upper, p.lower]).filter(v => isFinite(v) && v > 0) : [];
   const psarVals = psar ? psar.map(p => p.v).filter(v => isFinite(v) && v > 0) : [];
   const ichiVals = ichi ? ichi.flatMap(p => [p.spanA, p.spanB, p.tenkan, p.kijun]).filter(v => isFinite(v) && v > 0) : [];
   const chanVals = chan ? [...(chan.keltner || []), ...(chan.donchian || [])].flatMap(p => [p.upper, p.lower]).filter(v => isFinite(v) && v > 0) : [];
-  const min = Math.min(...lows, ...stVals, ...bbVals, ...psarVals, ...ichiVals, ...chanVals);
-  const max = Math.max(...highs, ...stVals, ...bbVals, ...psarVals, ...ichiVals, ...chanVals);
+  const min = Math.min(...lows, ...stVals, ...bbVals, ...psarVals, ...ichiVals, ...chanVals, ...hullVals);
+  const max = Math.max(...highs, ...stVals, ...bbVals, ...psarVals, ...ichiVals, ...chanVals, ...hullVals);
   const range = (max - min) || 1;
   const stepX = width / candles.length;
   const candleW = Math.max(2, stepX * 0.6);
   const y = v => 8 + (1 - (v - min) / range) * (height - 16);
 
   const emaPath = ema ? ema.map((v, i) => `${i === 0 ? "M" : "L"}${i * stepX + stepX/2},${y(v)}`).join(" ") : null;
+  const hullPath = hull ? hull.map((v, i) => `${i === 0 ? "M" : "L"}${i * stepX + stepX/2},${y(v)}`).join(" ") : null;
 
   // Bollinger bands — upper/lower dashed, mid faint solid
   const bbLine = (key) => bb ? bb.map((p, i) => `${i === 0 ? "M" : "L"}${i * stepX + stepX/2},${y(p[key])}`).join(" ") : null;
@@ -1299,7 +1363,7 @@ function PreviewChart({ candles, ema, st, bb, psar, ichi, chan, pats, markers, w
 
   return (
     <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" style={{ display: "block" }}>
-      {candles.map((c, i) => {
+      {drawCandles.map((c, i) => {
         const cx = i * stepX + stepX / 2;
         const up = c.close >= c.open;
         const color = up ? "var(--green)" : "var(--red)";
@@ -1340,6 +1404,9 @@ function PreviewChart({ candles, ema, st, bb, psar, ichi, chan, pats, markers, w
       )}
       {emaPath && (
         <path d={emaPath} fill="none" stroke="var(--accent)" strokeWidth={1.2} strokeDasharray="0" opacity={0.85} />
+      )}
+      {hullPath && (
+        <path d={hullPath} fill="none" stroke="var(--accent-2)" strokeWidth={1.4} opacity={0.9} />
       )}
       {stSegs.map((s, i) => (
         <line key={`st${i}`} x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2} stroke={s.color} strokeWidth={1.3} opacity={0.9} />

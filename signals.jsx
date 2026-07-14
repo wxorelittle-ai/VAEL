@@ -514,6 +514,54 @@ function taCandlePatterns(candles, lookback = 50) {
   return out;
 }
 
+/* Weighted MA (last value) — linear weights, newest heaviest. */
+function taWma(values, period) {
+  const n = values ? values.length : 0;
+  if (n < period) return n ? values[n - 1] : 0;
+  let num = 0, den = 0;
+  for (let i = 0; i < period; i++) { const w = period - i; num += values[n - 1 - i] * w; den += w; }
+  return num / den;
+}
+
+/* Weighted MA → full series (needed for Hull MA). */
+function taWmaSeries(values, period) {
+  const out = new Array(values.length).fill(0);
+  for (let i = 0; i < values.length; i++) {
+    if (i < period - 1) { out[i] = values[i]; continue; }
+    let num = 0, den = 0;
+    for (let k = 0; k < period; k++) { const w = period - k; num += values[i - k] * w; den += w; }
+    out[i] = num / den;
+  }
+  return out;
+}
+
+/* Hull Moving Average(period) → last value. Very low lag + smooth:
+ * HMA = WMA(2·WMA(n/2) − WMA(n), √n). Own implementation. */
+function taHull(values, period = 20) {
+  const n = values ? values.length : 0;
+  if (n < period + 2) return n ? values[n - 1] : 0;
+  const half = Math.max(1, Math.floor(period / 2)), sq = Math.max(1, Math.round(Math.sqrt(period)));
+  const wHalf = taWmaSeries(values, half), wFull = taWmaSeries(values, period);
+  const raw = values.map((_, i) => 2 * wHalf[i] - wFull[i]);
+  return taWma(raw, sq);
+}
+
+/* Heikin-Ashi transform → smoothed candle series [{open,hi,lo,close,v}].
+ * Filters noise; runs of same-colour HA candles = clean trend. Own implementation. */
+function taHeikinAshi(candles) {
+  const n = candles ? candles.length : 0;
+  const out = [];
+  let pOpen, pClose;
+  for (let i = 0; i < n; i++) {
+    const c = candles[i];
+    const close = (c.open + c.hi + c.lo + c.close) / 4;
+    const open = i === 0 ? (c.open + c.close) / 2 : (pOpen + pClose) / 2;
+    out.push({ open, hi: Math.max(c.hi, open, close), lo: Math.min(c.lo, open, close), close, v: c.v });
+    pOpen = open; pClose = close;
+  }
+  return out;
+}
+
 /* Attribute a signal to the agent whose domain drove it (cosmetic, but honest) */
 function agentForSignal(a) {
   const macdTurn = a.macd && ((a.side === "buy" && a.macd.hist > 0 && a.macd.histPrev <= 0) ||
@@ -811,5 +859,5 @@ Object.assign(window, {
   taKeltner, taDonchian, taObv, taRoc,
   taAroon, taVortex, taTrix, taCmf,
   taUltimate, taFisher, taElderRay, taPpo,
-  taCandlePatterns,
+  taCandlePatterns, taWma, taWmaSeries, taHull, taHeikinAshi,
 });
