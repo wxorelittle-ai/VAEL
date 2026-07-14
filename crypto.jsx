@@ -685,20 +685,33 @@ function CryptoSignalsPanel({ lang }) {
     if (!a) return;
     const price = candles[candles.length - 1].close;
     const RISK = 0.02;                              // risk 2% of the budget per trade
-    const maxLev = asset.maxLev || 100;
+    const exchMaxLev = asset.maxLev || 100;
+    const slPct = Math.abs(price - a.sl) / price || 0.004;
 
-    /* Recommended leverage — derived from setup quality and volatility, and kept
-     * deliberately conservative (never above 10x, cut hard when ATR is high). */
-    let lev = a.setup ? Math.round(a.confidence / 20) : 1;   // conf 55..95% → 3..5
-    if (a.atrPct > 1.0) lev -= 2;
-    if (a.atrPct > 2.0) lev = 1;
-    lev = Math.max(1, Math.min(10, Math.min(lev, maxLev)));
+    /* HARD RULE: liquidation must sit BEYOND the stop-loss, with a safety buffer.
+     * Liquidation distance ≈ 1/leverage, so leverage must satisfy
+     *     1/lev  >  slPct · BUFFER   ⇒   lev < 1 / (slPct · BUFFER)
+     * Without this, a big leverage puts liquidation CLOSER than the stop — you get
+     * wiped before the stop can fire and lose the whole margin, not the planned 2%. */
+    const LIQ_BUFFER = 1.5;
+    const maxSafeLev = Math.max(1, Math.floor(1 / (slPct * LIQ_BUFFER)));
+
+    // desired leverage from setup quality and volatility, then clamped by safety
+    let want = a.setup ? Math.round(a.confidence / 20) : 1;   // conf 55..95% → 3..5
+    if (a.atrPct > 1.0) want -= 2;
+    if (a.atrPct > 2.0) want = 1;
+    const lev = Math.max(1, Math.min(want, maxSafeLev, exchMaxLev, 10));
+    const levCapped = lev < Math.max(1, Math.min(want, exchMaxLev, 10));   // safety trimmed it
 
     // margin so that a stop-out costs ~RISK of the budget: margin·lev·slPct = risk$.
     // Never commit more than half the budget to a single position.
-    const slPct = Math.abs(price - a.sl) / price || 0.004;
     const MAX_MARGIN = budget * 0.5;
     const amount = Math.max(10, Math.min(MAX_MARGIN, Math.round((budget * RISK) / (lev * slPct) / 10) * 10));
+
+    // resulting liquidation price — always further from entry than the stop
+    const liq = lev > 1
+      ? (a.side === "buy" ? price * (1 - 1 / lev) : price * (1 + 1 / lev))
+      : null;
 
     // which of our strategies fits this market right now
     const strategy = (typeof matchStrategy === "function" && typeof taDmi === "function")
@@ -707,8 +720,9 @@ function CryptoSignalsPanel({ lang }) {
 
     const dec = price < 10 ? 4 : 2;
     setEntryPlan({
-      side: a.side, entry: price, sl: a.sl, tp: a.tp, amount, lev,
+      side: a.side, entry: price, sl: a.sl, tp: a.tp, amount, lev, liq,
       notional: amount * lev, riskUsd: Math.round(budget * RISK), budget,
+      maxSafeLev, levCapped, slPct,
       conf: a.confidence, setup: a.setup, reasons: a.reasons, rr: a.rr, strategy,
     });
     setForm(f => ({ ...f, side: a.side, amount, lev }));
@@ -716,7 +730,7 @@ function CryptoSignalsPanel({ lang }) {
       kind: a.side === "buy" ? "buy" : "sell",
       title: `${asset.sym} · план входа готов`,
       body: `${a.side === "buy" ? "ЛОНГ" : "ШОРТ"} @ ${price.toFixed(dec)} · маржа $${amount} × ${lev}x = $${amount * lev}${strategy ? ` · ${strategy.name}` : ""}`,
-      meta: `риск $${Math.round(budget * RISK)} (2% от $${budget})${a.setup ? "" : " · неполный сетап"} · SL ${a.sl.toFixed(dec)} / TP ${a.tp.toFixed(dec)}`,
+      meta: `риск $${Math.round(budget * RISK)} (2% от $${budget}) · SL ${a.sl.toFixed(dec)}${liq ? ` · ликв. ${liq.toFixed(dec)} (за стопом)` : ""}`,
     });
   }
 
@@ -1619,6 +1633,12 @@ function DemoTradeForm({ form, setForm, onSubmit, price, maxLev = 100, budget })
         <span>позиция <span style={{ color: "var(--text-bright)" }}>{notional.toLocaleString("en-US")}$</span></span>
         {liq && <span>ликв. <span style={{ color: "var(--red)" }}>{liq.toFixed(dec)}</span></span>}
       </div>
+      {/* auto SL sits at 2% — warn when leverage puts liquidation closer than that */}
+      {form.useSlTp && lev > 33 && (
+        <div style={{ fontFamily: "var(--font-mono)", fontSize: 9.5, color: "var(--red)", lineHeight: 1.4 }}>
+          ⚠ при {lev}x ликвидация ближе стопа (−{(100 / lev).toFixed(1)}% против −2%) — ликвидирует раньше, чем сработает стоп. Безопасный максимум 33x.
+        </div>
+      )}
 
       <label style={{
         display: "flex", alignItems: "center", gap: 6,
@@ -1671,8 +1691,26 @@ function EntryPlanCard({ plan, sym, onApply, onClear }) {
         <PlanBox label="Позиция" v={`$${plan.notional}`} c="var(--accent-2)" />
       </div>
 
-      <div style={{ fontFamily: "var(--font-mono)", fontSize: 9.5, color: "var(--text-dim)" }}>
+      {/* liquidation is deliberately kept beyond the stop — the stop always fires first */}
+      <div style={{
+        display: "flex", justifyContent: "space-between", alignItems: "center",
+        fontFamily: "var(--font-mono)", fontSize: 9.5,
+        background: "var(--bg-0)", border: "1px solid var(--line)", borderRadius: 3, padding: "4px 7px",
+      }}>
+        <span style={{ color: "var(--text-dim)" }}>ликвидация</span>
+        <span style={{ color: plan.liq ? "var(--red)" : "var(--text-dim)" }}>
+          {plan.liq ? plan.liq.toFixed(dec) : "нет (1x)"}
+        </span>
+        <span style={{ color: "var(--green)" }}>✓ за стопом</span>
+      </div>
+
+      <div style={{ fontFamily: "var(--font-mono)", fontSize: 9.5, color: "var(--text-dim)", lineHeight: 1.5 }}>
         риск ${plan.riskUsd} (2% от ${plan.budget}) · R:R 1:{plan.rr.toFixed(1)}{plan.setup ? "" : " · неполный сетап"}
+        {plan.levCapped && (
+          <div style={{ color: "var(--amber)" }}>
+            ⚠ плечо урезано до {plan.lev}x — при бо́льшем ликвидация была бы ближе стопа (макс. безопасное {plan.maxSafeLev}x)
+          </div>
+        )}
       </div>
 
       <button className="btn btn-accent" onClick={onApply} style={{ fontSize: 11 }}>
