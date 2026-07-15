@@ -675,6 +675,13 @@ function PortfolioPage({ lang }) {
     const rets = chrono.map(t => t.pnl / (t.margin != null ? t.margin : t.size || 1));
     const mean = rets.length ? rets.reduce((s, x) => s + x, 0) / rets.length : 0;
     const sd = rets.length ? Math.sqrt(rets.reduce((s, x) => s + (x - mean) ** 2, 0) / rets.length) : 0;
+    // edge breakdown: average win / loss, payoff ratio, expectancy, fees paid
+    const avgWin = wins.length ? gross / wins.length : 0;
+    const avgLoss = losses.length ? grossLoss / losses.length : 0;   // positive magnitude
+    const payoff = avgLoss > 0 ? avgWin / avgLoss : (avgWin > 0 ? Infinity : 0);
+    const pWin = n ? wins.length / n : 0;
+    const expectancy = n ? pWin * avgWin - (1 - pWin) * avgLoss : 0;  // expected $ per trade
+    const feesPaid = inPeriod.reduce((s, t) => s + (t.fee || 0), 0);  // commission already netted from pnl
     return {
       n, wins: wins.length, losses: losses.length,
       winRate: n ? wins.length / n * 100 : 0,
@@ -682,6 +689,7 @@ function PortfolioPage({ lang }) {
       pf: grossLoss > 0 ? gross / grossLoss : (gross > 0 ? Infinity : 0),
       best: sorted[0] || null, worst: sorted[sorted.length - 1] || null,
       avg: n ? realized / n : 0,
+      avgWin, avgLoss, payoff, expectancy, feesPaid,
       curve, maxDD,
       sharpe: sd > 0 ? (mean / sd) * Math.sqrt(Math.max(1, n)) : 0,
       startCap,
@@ -776,6 +784,11 @@ function PortfolioPage({ lang }) {
               c={st.maxDD < 15 ? "var(--green)" : "var(--red)"} detail="макс. просадка капитала" />
             <RiskMetric label="Средняя сделка" v={`${st.avg >= 0 ? "+" : "−"}$${Math.abs(st.avg).toFixed(2)}`}
               bar={50} c={st.avg >= 0 ? "var(--green)" : "var(--red)"} detail="P&L на сделку" />
+            <RiskMetric label="Payoff" v={st.payoff === Infinity ? "∞" : st.payoff.toFixed(2)}
+              bar={Math.min(100, st.payoff * 33)} c={st.payoff >= 1 ? "var(--green)" : "var(--amber)"}
+              detail={`ср. +$${st.avgWin.toFixed(2)} / −$${st.avgLoss.toFixed(2)}`} />
+            <RiskMetric label="Ожидание на сделку" v={`${st.expectancy >= 0 ? "+" : "−"}$${Math.abs(st.expectancy).toFixed(2)}`}
+              bar={50} c={st.expectancy >= 0 ? "var(--green)" : "var(--red)"} detail="матожидание P&L (edge)" />
 
             {st.best && (
               <div style={{ borderTop: "1px solid var(--line)", paddingTop: 8, display: "flex", flexDirection: "column", gap: 5, fontFamily: "var(--font-mono)", fontSize: 10.5 }}>
@@ -789,6 +802,10 @@ function PortfolioPage({ lang }) {
                     <span style={{ color: "var(--red)" }}>{st.worst.pnl >= 0 ? "+" : "−"}${Math.abs(st.worst.pnl).toFixed(2)}</span>
                   </div>
                 )}
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <span style={{ color: "var(--text-dim)" }}>комиссии уплачено</span>
+                  <span style={{ color: "var(--amber)" }} title="уже вычтены из P&L (чистый)">−${st.feesPaid.toFixed(2)}</span>
+                </div>
               </div>
             )}
             {st.n === 0 && (
