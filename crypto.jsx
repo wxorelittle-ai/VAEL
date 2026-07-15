@@ -1004,18 +1004,14 @@ function CryptoSignalsPanel({ lang }) {
           </div>
         </div>
 
-        {/* Right: signal + trade form. The signal/plan area scrolls; the trade form
-            (with the "Открыть позицию" button) stays pinned so a tall entry plan can
-            never push the button off-screen. */}
-        <div style={{ borderLeft: "1px solid var(--line)", display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
-          <div className="scroll" style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column" }}>
-            <ActiveSignalCard signal={activeSignal} read={currentRead} onOpen={openFromSignal} flash={pendingFlash === activeSignal?.id} />
-            {entryPlan && <EntryPlanCard plan={entryPlan} sym={asset.sym} onApply={() => openFromPlan(entryPlan)} onClear={() => setEntryPlan(null)} onFlip={entryPlan.alt ? flipPlan : null} />}
-          </div>
-          <div style={{ flexShrink: 0, borderTop: "1px solid var(--line)" }}>
-            <DemoTradeForm form={form} setForm={setForm} onSubmit={openManual} price={priceNow} maxLev={asset.maxLev || 100}
-              budget={budget} />
-          </div>
+        {/* Right: active signal + entry plan + manual trade form flow together in one
+            scrollable column — no split; scroll to reach the trade button when a tall
+            entry plan is open. */}
+        <div className="scroll" style={{ borderLeft: "1px solid var(--line)", display: "flex", flexDirection: "column", minHeight: 0, overflowY: "auto" }}>
+          <ActiveSignalCard signal={activeSignal} read={currentRead} onOpen={openFromSignal} flash={pendingFlash === activeSignal?.id} />
+          {entryPlan && <EntryPlanCard plan={entryPlan} sym={asset.sym} onApply={() => openFromPlan(entryPlan)} onClear={() => setEntryPlan(null)} onFlip={entryPlan.alt ? flipPlan : null} />}
+          <DemoTradeForm form={form} setForm={setForm} onSubmit={openManual} price={priceNow} maxLev={asset.maxLev || 100}
+            budget={budget} />
         </div>
       </div>
 
