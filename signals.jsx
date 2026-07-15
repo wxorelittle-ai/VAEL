@@ -1108,9 +1108,12 @@ function optimalEntry(candles, opts = {}) {
   if ((long && price <= entry) || (!long && price >= entry)) { entry = price; entryType = "market"; cluster = []; }
 
   /* 3. stop beyond the structure that justifies the entry */
+  // widen the stop when a macro event is near (initial spike overshoots levels)
+  const macroWiden = (typeof macroRisk === "function" && macroRisk().widenStop) || 1;
+  const slAtr = 0.8 * macroWiden;
   const sl = long
-    ? Math.min(entry - atr * 0.8, L.swingLo - atr * 0.2)
-    : Math.max(entry + atr * 0.8, L.swingHi + atr * 0.2);
+    ? Math.min(entry - atr * slAtr, L.swingLo - atr * 0.2)
+    : Math.max(entry + atr * slAtr, L.swingHi + atr * 0.2);
   const slDist = Math.abs(entry - sl);
   const slPct = slDist / entry;
 
@@ -1131,7 +1134,10 @@ function optimalEntry(candles, opts = {}) {
     ? Math.ceil(marginAt1x / (budget * TGT_MARGIN_FRAC))
     : 1;
   const levWanted = lev;
-  lev = Math.max(1, Math.min(lev, maxSafeLev, exchMaxLev, HARD_LEV_CAP));
+  // Macro fuse: near a known FOMC/CPI print, cap leverage (and flag blocked entries).
+  const macro = typeof macroRisk === "function" ? macroRisk() : null;
+  const macroCap = macro && macro.leverageCap ? macro.leverageCap : Infinity;
+  lev = Math.max(1, Math.min(lev, maxSafeLev, exchMaxLev, HARD_LEV_CAP, macroCap));
 
   const margin = Math.max(10, Math.min(budget * MAX_MARGIN_FRAC, Math.round(riskUsd / (lev * slPct) / 10) * 10));
   const notional = margin * lev;
@@ -1151,6 +1157,7 @@ function optimalEntry(candles, opts = {}) {
     margin, notional, liq, riskUsd, budget,
     profitAtTp, lossAtSl, mktRR, edgePct,
     conf: a.confidence, setup: !!a.setup, reasons: a.reasons, atr,
+    macro: macro && macro.level !== "clear" ? { level: macro.level, note: macro.note, blockEntry: macro.blockEntry, cap: macro.leverageCap } : null,
   };
 }
 

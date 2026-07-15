@@ -1107,6 +1107,9 @@ function CryptoSignalsPanel({ lang }) {
         )}
       </div>
 
+      {/* MACRO FUSE — FOMC/CPI proximity (known-in-advance risk) */}
+      {typeof MacroBanner === "function" && <MacroBanner />}
+
       {/* DERIVATIVES STATS BAR */}
       <DerivStatsBar stats={deriv} longShort={longShort} />
 
@@ -1715,6 +1718,17 @@ function EntryPlanCard({ plan, sym, onApply, onClear }) {
           </>
         )}
       </div>
+
+      {plan.macro && (
+        <div style={{
+          fontSize: 9.5, fontFamily: "var(--font-mono)", lineHeight: 1.4,
+          color: plan.macro.blockEntry ? "var(--red)" : "var(--amber)",
+          background: "var(--bg-0)", border: `1px solid ${plan.macro.blockEntry ? "var(--red)" : "var(--amber)"}`,
+          borderRadius: 3, padding: "4px 7px",
+        }}>
+          ◱ {plan.macro.note}{plan.macro.cap ? ` · плечо ограничено ${plan.macro.cap}x` : ""}
+        </div>
+      )}
 
       {plan.strategy && (
         <div style={{ fontSize: 10.5, color: "var(--text-mid)", lineHeight: 1.4 }}>
