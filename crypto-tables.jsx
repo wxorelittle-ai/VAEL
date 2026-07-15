@@ -33,7 +33,7 @@ function OpenPositionsTable({ positions, onClose }) {
             fontFamily: "var(--font-mono)", fontSize: 10.5,
             background: p.signalId ? "oklch(0.78 0.16 var(--accent-h) / 0.04)" : "transparent",
           }}>
-            <span style={{ color, fontWeight: 600 }}>{isBuy ? "▲ ЛОНГ" : "▼ ШОРТ"}</span>
+            <span style={{ color, fontWeight: 600 }}>{isBuy ? "▲ ЛОНГ" : "▼ ШОРТ"}{p.trail ? <span title={`трейлинг-стоп ${(p.trail * 100).toFixed(1)}%`} style={{ color: "var(--accent-2)", fontSize: 8.5, marginLeft: 3 }}>⇡T</span> : null}</span>
             <span style={{ color: "var(--text-mid)" }}>{margin}$</span>
             <span style={{ color: lev >= 25 ? "var(--red)" : lev >= 10 ? "var(--amber)" : "var(--accent)", fontWeight: 600 }}>{lev}x</span>
             <span style={{ color: "var(--text)" }}>{p.size}$</span>
@@ -111,7 +111,7 @@ function HistoryTable({ history }) {
         const isBuy = h.side === "buy";
         const color = isBuy ? "var(--green)" : "var(--red)";
         const pnlColor = h.pnl >= 0 ? "var(--green)" : "var(--red)";
-        const reasonLabel = { tp: "TP", sl: "SL", manual: "вручную" }[h.reason] || h.reason;
+        const reasonLabel = { tp: "TP", sl: "SL", trail: "Трейл", liq: "ЛИКВ", manual: "вручную" }[h.reason] || h.reason;
         const fee = h.fee != null ? h.fee : 0;
         return (
           <div key={h.id} style={{

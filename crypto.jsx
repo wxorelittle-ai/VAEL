@@ -358,7 +358,7 @@ function CryptoSignalsPanel({ lang }) {
   const [positions, setPositions] = useState([]);
   const [history, setHistory] = useState([]);
   const [pending, setPending] = useState([]); // resting limit orders waiting for their price
-  const [form, setForm] = useState({ side: "buy", amount: 500, lev: 1, useSlTp: true });
+  const [form, setForm] = useState({ side: "buy", amount: 500, lev: 1, useSlTp: true, trail: false });
   // Trading capital — owned by Settings; everything (margin, leverage) is derived from it.
   const [budget, setBudget] = useState(loadBudget);
   useEffect(() => {
@@ -526,26 +526,42 @@ function CryptoSignalsPanel({ lang }) {
     if (!candles.length) return;
     const price = candles[candles.length - 1].close;
 
-    // update PnL on positions. P&L is on the notional (size = margin × leverage);
-    // the % shown is ROE — return on the margin actually put up (lev-aware).
+    // effective stop = the fixed stop, tightened by any trailing (never loosens):
+    // long trails under the peak (hiWater·(1−trail)), short over the trough.
+    const effStop = (p) => {
+      if (!p.trail || p.trail <= 0) return p.sl;
+      if (p.side === "buy") {
+        const c = Math.max(p.hiWater != null ? p.hiWater : p.entry, price) * (1 - p.trail);
+        return p.sl != null ? Math.max(p.sl, c) : c;
+      }
+      const c = Math.min(p.loWater != null ? p.loWater : p.entry, price) * (1 + p.trail);
+      return p.sl != null ? Math.min(p.sl, c) : c;
+    };
+
+    // update PnL on positions + advance the trailing stop. P&L is on the notional
+    // (size = margin × leverage); the % shown is ROE — return on the margin put up.
     setPositions(prev => prev.map(p => {
       const pnl = p.side === "buy"
         ? (price - p.entry) * (p.size / p.entry)
         : (p.entry - price) * (p.size / p.entry);
       const margin = p.margin != null ? p.margin : p.size;   // legacy positions: lev 1
       const pnlPct = margin ? (pnl / margin) * 100 : 0;
-      return { ...p, currentPrice: price, pnl, pnlPct };
+      const hiWater = p.trail ? Math.max(p.hiWater != null ? p.hiWater : p.entry, price) : p.hiWater;
+      const loWater = p.trail ? Math.min(p.loWater != null ? p.loWater : p.entry, price) : p.loWater;
+      const sl = effStop(p);
+      return { ...p, currentPrice: price, pnl, pnlPct, sl, hiWater, loWater };
     }));
 
-    // auto-close: liquidation and stop-loss only. Take-profit does NOT auto-close —
-    // profit is left to run; the target stays on the chart as a reference and the
-    // position is closed by the stop, liquidation, or manually.
+    // auto-close: liquidation and stop-loss only (stop includes the trail). Take-
+    // profit does NOT auto-close — profit is left to run; the target stays on the
+    // chart as a reference and the position closes by stop, liquidation, or manually.
     const toClose = [];
     positions.forEach(p => {
+      const sl = effStop(p);
       const hitLiq = p.liq && (p.side === "buy" ? price <= p.liq : price >= p.liq);
-      const hitSl = p.sl && (p.side === "buy" ? price <= p.sl : price >= p.sl);
+      const hitSl = sl != null && (p.side === "buy" ? price <= sl : price >= sl);
       if (hitLiq) toClose.push({ id: p.id, exitPrice: p.liq, reason: "liq" });
-      else if (hitSl) toClose.push({ id: p.id, exitPrice: price, reason: "sl" });
+      else if (hitSl) toClose.push({ id: p.id, exitPrice: price, reason: p.trail ? "trail" : "sl" });
     });
     if (toClose.length > 0) {
       toClose.forEach(({ id, exitPrice, reason }) => closePosition(id, exitPrice, reason));
@@ -641,7 +657,7 @@ function CryptoSignalsPanel({ lang }) {
 
   /* A leveraged demo position: margin × leverage = notional size.
    * Liquidation ≈ entry ∓ entry/lev (simplified — no fees / maintenance margin). */
-  function makePosition({ side, price, sl, tp, signalId, margin: marginArg, lev: levArg }) {
+  function makePosition({ side, price, sl, tp, signalId, margin: marginArg, lev: levArg, trail }) {
     const margin = marginArg != null ? marginArg : form.amount;
     const lev = Math.max(1, +(levArg != null ? levArg : form.lev) || 1);
     const size = margin * lev;
@@ -652,6 +668,9 @@ function CryptoSignalsPanel({ lang }) {
     return {
       id: `P-${Date.now()}`, side, entry: price,
       margin, lev, size, liq, sl, tp, signalId,
+      // trailing stop: `trail` = fraction the stop trails behind the peak price.
+      // hiWater/loWater track the best price reached — the stop only ever tightens.
+      trail: trail || 0, hiWater: price, loWater: price,
       feeRate: FEE_RATE, entryFee,
       sym: asset.sym, bybit: asset.bybit,
       openedAt: nowTsHM(), openedTs: Date.now(),   // real timestamp — portfolio needs it
@@ -662,11 +681,15 @@ function CryptoSignalsPanel({ lang }) {
   function openManual() {
     const price = candles[candles.length - 1].close;
     const slPct = 0.02, tpPct = 0.04;
+    // trailing needs a stop to trail, so it also sets the initial stop even if the
+    // fixed-bracket checkbox is off.
+    const wantStop = form.useSlTp || form.trail;
     const newPos = makePosition({
       side: form.side, price,
-      sl: form.useSlTp ? (form.side === "buy" ? price * (1 - slPct) : price * (1 + slPct)) : null,
+      sl: wantStop ? (form.side === "buy" ? price * (1 - slPct) : price * (1 + slPct)) : null,
       tp: form.useSlTp ? (form.side === "buy" ? price * (1 + tpPct) : price * (1 - tpPct)) : null,
       signalId: null,
+      trail: form.trail ? slPct : 0,
     });
     setPositions(prev => [...prev, newPos]);
     setTab("open");
@@ -693,6 +716,7 @@ function CryptoSignalsPanel({ lang }) {
       const order = {
         id: `O-${Date.now()}`, side: plan.side, entry,
         sl: plan.sl, tp: plan.tp, lev: plan.lev, margin: plan.amount,
+        trail: form.trail ? plan.slPct : 0,
         sym: asset.sym, bybit: asset.bybit, mktAtPlace: plan.price,
         placedAt: nowTsHM(), placedTs: Date.now(),
       };
@@ -712,6 +736,7 @@ function CryptoSignalsPanel({ lang }) {
       side: plan.side, price: entry,
       sl: plan.sl, tp: plan.tp, signalId: null,
       margin: plan.amount, lev: plan.lev,
+      trail: form.trail ? plan.slPct : 0,
     });
     setPositions(prev => [...prev, newPos]);
     setTab("open");
@@ -731,6 +756,7 @@ function CryptoSignalsPanel({ lang }) {
       side: order.side, price: order.entry,
       sl: order.sl, tp: order.tp, signalId: "limit",
       margin: order.margin, lev: order.lev,
+      trail: order.trail || 0,
     });
     setPending(prev => prev.filter(o => o.id !== order.id));
     setPositions(prev => [...prev, newPos]);
@@ -778,10 +804,11 @@ function CryptoSignalsPanel({ lang }) {
     }, ...prev].slice(0, 200));
     // side effect outside any updater
     const reasonLabel = reason === "tp" ? "Take Profit" : reason === "sl" ? "Stop Loss"
-      : reason === "liq" ? "ЛИКВИДАЦИЯ" : "ручное закрытие";
+      : reason === "trail" ? "Трейлинг-стоп" : reason === "liq" ? "ЛИКВИДАЦИЯ" : "ручное закрытие";
     const dec = exitPrice < 10 ? 4 : 2;
     window.__emitToast?.({
-      kind: reason === "tp" ? "win" : (reason === "sl" || reason === "liq") ? "loss" : "close",
+      kind: reason === "tp" ? "win" : reason === "trail" ? (pnl >= 0 ? "win" : "loss")
+        : (reason === "sl" || reason === "liq") ? "loss" : "close",
       title: `${asset.sym} · позиция закрыта · ${reasonLabel}`,
       body: `${closing.side === "buy" ? "ЛОНГ" : "ШОРТ"} ${closing.size}$${closing.lev > 1 ? ` (${closing.lev}x)` : ""} · вход ${closing.entry.toFixed(dec)} → выход ${exitPrice.toFixed(dec)}`,
       meta: `P&L: ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}$ (чистыми) · комиссия −${fee.toFixed(2)}$ · ROE ${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(1)}%`,
@@ -1520,6 +1547,15 @@ function DemoTradeForm({ form, setForm, onSubmit, price, maxLev = 100, budget })
           onChange={e => setForm({ ...form, useSlTp: e.target.checked })}
           style={{ accentColor: "var(--accent)" }} />
         Авто стоп −2% · цель +4% (цель не закрывает — прибыль бежит)
+      </label>
+      <label style={{
+        display: "flex", alignItems: "center", gap: 6,
+        fontSize: 10.5, color: "var(--text-mid)", cursor: "pointer",
+      }}>
+        <input type="checkbox" checked={form.trail}
+          onChange={e => setForm({ ...form, trail: e.target.checked })}
+          style={{ accentColor: "var(--accent-2)" }} />
+        Трейлинг-стоп (−2%, подтягивается за ценой)
       </label>
       <button className="btn btn-accent" onClick={onSubmit} style={{ marginTop: "auto" }}>
         ▸ Открыть позицию по ~{price < 10 ? price.toFixed(3) : price < 1000 ? price.toFixed(2) : price.toFixed(0)}
