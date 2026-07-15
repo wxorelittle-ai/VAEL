@@ -43,7 +43,7 @@ function SimulatorPage({ lang }) {
     try {
       const candles = await bybitFetchKlines(coin.bybit, period.interval, period.limit);
       const seeds = evolve ? seedRef.current : [];
-      const cfg = { capital, leverage: lev, fees: 0.02, genCount: 8, genSeed: (evolve ? gen * 8 : 0) };
+      const cfg = { capital, leverage: lev, fees: 0.055, genCount: 8, genSeed: (evolve ? gen * 8 : 0) };  // 0.055% taker, same as demo terminal
       const r = runSimLab(candles, cfg, seeds);
       featRef.current = { candles, f: (typeof computeFeatures === "function" ? computeFeatures(candles) : null) };
       setExpanded(null);

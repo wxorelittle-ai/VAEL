@@ -56,9 +56,10 @@ function genesEntry(g, f, i) {
 }
 
 /* Backtest a genes strategy on precomputed features. Same rules as the terminal:
- * ATR stop/target, 0.02% fees, no overlapping trades. */
+ * ATR stop/target, 0.055% taker fee per side (matches the demo terminal's
+ * FEE_RATE in crypto.jsx), no overlapping trades. */
 function backtestGenes(candles, f, g, cfg) {
-  const cap0 = cfg.capital, lev = cfg.leverage || 1, feeRate = (cfg.fees != null ? cfg.fees : 0.02) / 100, riskFrac = 0.01, H = 24;
+  const cap0 = cfg.capital, lev = cfg.leverage || 1, feeRate = (cfg.fees != null ? cfg.fees : 0.055) / 100, riskFrac = 0.01, H = 24;
   const long = g.side === "buy";
   let equity = cap0, wins = 0, losses = 0, gW = 0, gL = 0;
   const curve = [{ v: equity }];
