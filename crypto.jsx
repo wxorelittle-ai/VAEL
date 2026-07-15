@@ -359,6 +359,12 @@ function CryptoSignalsPanel({ lang }) {
   const [history, setHistory] = useState([]);
   const [pending, setPending] = useState([]); // resting limit orders waiting for their price
   const [form, setForm] = useState({ side: "buy", amount: 500, lev: 1, useSlTp: true, trail: false });
+  // ─── autonomous agent (paper): trades the current best strategy, trails profit,
+  // re-runs the lab to keep improving. Session-only (never auto-starts on reload).
+  const [autoOn, setAutoOn] = useState(false);
+  const [autoStrat, setAutoStrat] = useState(null);   // {genes, name, roi, win, …}
+  const [autoLog, setAutoLog] = useState([]);          // recent action lines
+  const autoRef = useRef({ lastEval: 0, lastPickTrades: 0, lastClosedAuto: 0, cooldownUntil: 0 });
   // Trading capital — owned by Settings; everything (margin, leverage) is derived from it.
   const [budget, setBudget] = useState(loadBudget);
   useEffect(() => {
@@ -576,6 +582,69 @@ function CryptoSignalsPanel({ lang }) {
     if (toFill.length > 0) toFill.forEach(o => fillPending(o));
   // eslint-disable-next-line
   }, [candles]);
+
+  function pushAutoLog(s) { setAutoLog(prev => [`${nowTsHM()} · ${s}`, ...prev].slice(0, 8)); }
+
+  function toggleAuto() {
+    if (autoOn) { setAutoOn(false); pushAutoLog("⏸ агент остановлен"); return; }
+    const strat = typeof autoPickStrategy === "function"
+      ? autoPickStrategy(candles, asset.bybit, { capital: budget, maxLev: asset.maxLev || 100 }) : null;
+    const st = autoRef.current;
+    st.lastEval = 0; st.cooldownUntil = 0;
+    st.lastPickTrades = history.filter(h => h.signalId === "auto").length;
+    st.lastClosedAuto = st.lastPickTrades;
+    if (strat) { setAutoStrat(strat); pushAutoLog(`▶ старт · «${strat.name}» (ROI ${strat.roi.toFixed(1)}% · win ${strat.win.toFixed(0)}%)`); }
+    else pushAutoLog("▶ старт · подбираю стратегию…");
+    setAutoOn(true);
+    setTab("open");
+  }
+
+  // ─── autonomous agent step (runs on each candle tick while ON) ───
+  useEffect(() => {
+    if (!autoOn || !candles.length || typeof autoEntry !== "function") return;
+    const now = Date.now();
+    const st = autoRef.current;
+    const cfg = { capital: budget, maxLev: asset.maxLev || 100 };
+
+    // detect closed agent trades → log the result + a short cooldown before re-entry
+    const closedAuto = history.filter(h => h.signalId === "auto").length;
+    if (closedAuto > st.lastClosedAuto) {
+      history.filter(h => h.signalId === "auto").slice(0, closedAuto - st.lastClosedAuto).forEach(h => {
+        pushAutoLog(`${h.pnl >= 0 ? "✔ прибыль +" : "✖ убыток −"}$${Math.abs(h.pnl).toFixed(2)} · ${h.reason === "trail" ? "трейл" : h.reason === "sl" ? "стоп" : h.reason === "liq" ? "ликвидация" : h.reason}`);
+      });
+      st.lastClosedAuto = closedAuto;
+      st.cooldownUntil = now + 15000;
+    }
+
+    // learn: every 5 closed agent trades, re-run the lab and adopt the new best
+    if (autoStrat && closedAuto - st.lastPickTrades >= 5) {
+      st.lastPickTrades = closedAuto;
+      const strat = autoPickStrategy(candles, asset.bybit, cfg);
+      if (strat && strat.name !== autoStrat.name) { setAutoStrat(strat); pushAutoLog(`🧠 обучение · перешёл на «${strat.name}» (ROI ${strat.roi.toFixed(1)}%)`); }
+      else if (strat) pushAutoLog(`🧠 обучение · «${strat.name}» подтверждена лучшей`);
+    }
+
+    // enter: at most one agent position at a time, ≥6s between evals, cooldown after a close
+    const openAuto = positions.filter(p => p.signalId === "auto").length;
+    if (autoStrat && openAuto === 0 && now - st.lastEval > 6000 && now > st.cooldownUntil) {
+      st.lastEval = now;
+      const plan = autoEntry(candles, autoStrat.genes, cfg);
+      if (plan && plan.margin > 0) {
+        const price = candles[candles.length - 1].close;
+        const dec = price < 10 ? 4 : 2;
+        const newPos = makePosition({
+          side: plan.side, price,
+          sl: plan.sl, tp: plan.tp, signalId: "auto",
+          margin: plan.margin, lev: plan.lev,
+          trail: plan.slPct,   // trail the stop so profit is locked as it runs
+        });
+        setPositions(prev => [...prev, newPos]);
+        pushAutoLog(`${plan.side === "buy" ? "▲ ЛОНГ" : "▼ ШОРТ"} @ ${price.toFixed(dec)} · ${plan.lev}x · трейл ${(plan.slPct * 100).toFixed(1)}%`);
+        window.__emitToast?.({ kind: "open", title: `${asset.sym} · агент открыл ${plan.side === "buy" ? "ЛОНГ" : "ШОРТ"}`, body: `«${autoStrat.name}» · маржа ${newPos.margin}$ × ${newPos.lev}x = ${newPos.size}$`, meta: `трейлинг-стоп ${(plan.slPct * 100).toFixed(1)}% · вход ${price.toFixed(dec)}` });
+      }
+    }
+  // eslint-disable-next-line
+  }, [candles, autoOn]);
 
   // ─── new signals + verification (every ~5s) ────
   useInterval(() => {
@@ -976,7 +1045,44 @@ function CryptoSignalsPanel({ lang }) {
             background: "transparent", color: "var(--text-dim)", border: "1px solid var(--line)",
           }}>✕</button>
         )}
+        <button onClick={toggleAuto} title="Автоматическая торговля (симуляция): агент сам открывает сделки, трейлит прибыль и переобучается"
+          style={{
+            marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 700,
+            padding: "3px 12px", borderRadius: 3, cursor: "pointer", letterSpacing: 0.05,
+            background: autoOn ? "oklch(0.7 0.14 150 / 0.16)" : "var(--bg-2)",
+            color: autoOn ? "var(--green)" : "var(--accent-2)",
+            border: `1px solid ${autoOn ? "var(--green)" : "var(--accent-2)"}`,
+          }}>{autoOn ? "■ СТОП-АГЕНТ" : "▶ АВТО-ТОРГОВЛЯ"}</button>
       </div>
+
+      {/* AGENT STATUS — visible while the autonomous agent is running */}
+      {autoOn && (() => {
+        const ah = history.filter(h => h.signalId === "auto");
+        const wins = ah.filter(h => h.pnl > 0).length;
+        const net = ah.reduce((s, h) => s + (h.pnl || 0), 0);
+        const openA = positions.filter(p => p.signalId === "auto").length;
+        return (
+          <div className="panel" style={{ padding: "8px 12px", display: "flex", gap: 14, alignItems: "flex-start", flexWrap: "wrap", borderLeft: "3px solid var(--green)" }}>
+            <div style={{ minWidth: 150 }}>
+              <div style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--text-dim)", letterSpacing: 0.1 }}>
+                <span style={{ color: "var(--green)" }}>●</span> АГЕНТ · СИМУЛЯЦИЯ
+              </div>
+              <div style={{ fontFamily: "var(--font-mono)", fontSize: 11.5, color: "var(--text-bright)", marginTop: 2 }}>
+                {autoStrat ? autoStrat.name : "подбор стратегии…"}
+              </div>
+              {autoStrat && <div style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--text-dim)" }}>бэктест ROI {autoStrat.roi.toFixed(1)}% · win {autoStrat.win.toFixed(0)}% · PF {autoStrat.pf === Infinity ? "∞" : autoStrat.pf.toFixed(2)}</div>}
+            </div>
+            <div style={{ display: "flex", gap: 12, fontFamily: "var(--font-mono)", fontSize: 10.5 }}>
+              <span>сделок <span style={{ color: "var(--text-bright)" }}>{ah.length}</span>{openA ? <span style={{ color: "var(--accent-2)" }}> (+{openA} откр.)</span> : null}</span>
+              <span>winrate <span style={{ color: ah.length && wins / ah.length >= 0.5 ? "var(--green)" : "var(--amber)" }}>{ah.length ? (wins / ah.length * 100).toFixed(0) : "—"}%</span></span>
+              <span>чистыми <span style={{ color: net >= 0 ? "var(--green)" : "var(--red)" }}>{net >= 0 ? "+" : "−"}${Math.abs(net).toFixed(2)}</span></span>
+            </div>
+            <div className="scroll" style={{ marginLeft: "auto", maxWidth: 380, maxHeight: 46, overflowY: "auto", fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--text-dim)", lineHeight: 1.5 }}>
+              {autoLog.length ? autoLog.map((l, i) => <div key={i} style={{ color: i === 0 ? "var(--text-mid)" : "var(--text-dim)" }}>{l}</div>) : <div>ожидание сигнала…</div>}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* MACRO FUSE — FOMC/CPI proximity (known-in-advance risk) */}
       {typeof MacroBanner === "function" && <MacroBanner />}

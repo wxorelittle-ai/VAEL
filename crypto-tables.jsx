@@ -33,7 +33,7 @@ function OpenPositionsTable({ positions, onClose }) {
             fontFamily: "var(--font-mono)", fontSize: 10.5,
             background: p.signalId ? "oklch(0.78 0.16 var(--accent-h) / 0.04)" : "transparent",
           }}>
-            <span style={{ color, fontWeight: 600 }}>{isBuy ? "▲ ЛОНГ" : "▼ ШОРТ"}{p.trail ? <span title={`трейлинг-стоп ${(p.trail * 100).toFixed(1)}%`} style={{ color: "var(--accent-2)", fontSize: 8.5, marginLeft: 3 }}>⇡T</span> : null}</span>
+            <span style={{ color, fontWeight: 600 }}>{p.signalId === "auto" ? <span title="сделка агента" style={{ marginRight: 2 }}>🤖</span> : null}{isBuy ? "▲ ЛОНГ" : "▼ ШОРТ"}{p.trail ? <span title={`трейлинг-стоп ${(p.trail * 100).toFixed(1)}%`} style={{ color: "var(--accent-2)", fontSize: 8.5, marginLeft: 3 }}>⇡T</span> : null}</span>
             <span style={{ color: "var(--text-mid)" }}>{margin}$</span>
             <span style={{ color: lev >= 25 ? "var(--red)" : lev >= 10 ? "var(--amber)" : "var(--accent)", fontWeight: 600 }}>{lev}x</span>
             <span style={{ color: "var(--text)" }}>{p.size}$</span>
