@@ -63,11 +63,15 @@ function backtestGenes(candles, f, g, cfg) {
   const cap0 = cfg.capital, lev = cfg.leverage || 1, feeRate = (cfg.fees != null ? cfg.fees : 0.055) / 100, riskFrac = 0.01, H = 24;
   // slippage per side (fraction of notional) — real fills are worse than the mid.
   const slipRate = (cfg.slip != null ? cfg.slip : 0.02) / 100;
+  // optional bar window [iStart, iEnd] — lets a caller backtest just the train or
+  // just the test slice of the series (walk-forward). Defaults to the whole series.
+  const iStart = Math.max(55, cfg.iStart != null ? cfg.iStart : 55);
+  const iEnd = cfg.iEnd != null ? Math.min(cfg.iEnd, candles.length - 2) : candles.length - 2;
   const long = g.side === "buy";
   let equity = cap0, wins = 0, losses = 0, gW = 0, gL = 0;
   const curve = [{ v: equity }];
-  let i = 55;
-  while (i <= candles.length - 2) {
+  let i = iStart;
+  while (i <= iEnd) {
     if (!genesEntry(g, f, i)) { i++; continue; }
     const entry = f.closes[i], atr = f.atr[i] || entry * 0.004;
     const slD = atr * (g.slAtr || 1.5);
@@ -228,20 +232,40 @@ function genesPlan(candles, f, g, cfg) {
   };
 }
 
-/* Full lab run: library + a fresh generation + (optionally) evolved winners. */
+/* Full lab run: library + a fresh generation + (optionally) evolved winners.
+ * Walk-forward: the series is split into train (first `split`) and test (the rest).
+ * Every strategy is backtested on BOTH, but the HEADLINE numbers (ROI, win, PF,
+ * champions, evolution seeds) come from the TEST slice — data the strategy was not
+ * selected on. trainReturn is kept alongside so overfitting is visible (high train
+ * + low test = curve-fit). This removes the in-sample bias where a strategy was
+ * ranked on the very candles it was tuned to. */
 function runSimLab(candles, cfg, seedGenes) {
   const f = computeFeatures(candles);
+  const n = candles.length;
+  const split = cfg.split != null ? cfg.split : 0.65;
+  const cut = Math.max(80, Math.min(n - 30, Math.floor(n * split)));   // keep a usable test window
+  const trainCfg = { ...cfg, iStart: 55, iEnd: cut - 1 };
+  const testCfg = { ...cfg, iStart: cut, iEnd: n - 2 };
   const rows = [];
   const bt = (name, source, genes) => {
-    const r = backtestGenes(candles, f, genes, cfg);
-    rows.push({ name, source, genes, ...r.stats, curve: r.curve, profit: cfg.capital * r.stats.totalReturn / 100 });
+    const train = backtestGenes(candles, f, genes, trainCfg).stats;
+    const test = backtestGenes(candles, f, genes, testCfg);
+    const s = test.stats;
+    rows.push({
+      name, source, genes,
+      // headline = out-of-sample (test)
+      totalReturn: s.totalReturn, trades: s.trades, winRate: s.winRate,
+      profitFactor: s.profitFactor, maxDD: s.maxDD, last: s.last,
+      trainReturn: train.totalReturn, trainTrades: train.trades,   // in-sample, for overfit check
+      curve: test.curve, profit: cfg.capital * s.totalReturn / 100,
+    });
   };
   strategyLibrary().forEach(s => bt(s.name, s.source, s.genes));
   // a generation of generated strategies
   for (let s = 0; s < (cfg.genCount || 8); s++) { const g = generateGenes(s + (cfg.genSeed || 0)); bt(`Gen ${genesLabel(g)}`, "generated", g); }
   // evolve the seeds passed in (winners of the previous run)
   (seedGenes || []).forEach((g, idx) => { for (let k = 1; k <= 2; k++) { const m = mutateGenes(g, k + idx); bt(`Evo ${genesLabel(m)}`, "evolved", m); } });
-  rows.sort((a, b) => b.totalReturn - a.totalReturn);
+  rows.sort((a, b) => b.totalReturn - a.totalReturn);   // rank by out-of-sample return
   return rows;
 }
 

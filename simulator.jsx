@@ -102,7 +102,7 @@ function SimulatorPage({ lang }) {
           {/* Summary */}
           <div className="panel" style={{ display: "flex", flexWrap: "wrap" }}>
             <SimStat label={`ЛУЧШАЯ · ${period.label.toUpperCase()}`} v={best.name} c={SRC_CFG[best.source].color}
-              sub={`${best.totalReturn >= 0 ? "+" : ""}${best.totalReturn.toFixed(1)}% · ${SRC_CFG[best.source].label}`} />
+              sub={`${best.totalReturn >= 0 ? "+" : ""}${best.totalReturn.toFixed(1)}% OOS · ${SRC_CFG[best.source].label}`} />
             <SimStat label="ПРИБЫЛЬ ЛУЧШЕЙ" v={`${best.profit >= 0 ? "+" : "−"}$${Math.abs(best.profit).toFixed(0)}`}
               c={best.profit >= 0 ? "var(--green)" : "var(--red)"} sub={`капитал $${capital.toLocaleString("en-US")} · ${lev}x · win ${best.winRate.toFixed(0)}%`} />
             <SimStat label="СТРАТЕГИЙ В ПРОГОНЕ" v={rows.length}
@@ -115,21 +115,22 @@ function SimulatorPage({ lang }) {
             {/* Leaderboard */}
             <div className="panel" style={{ padding: 0, overflow: "hidden" }}>
               <PanelHeader title="РЕЙТИНГ ПРОГОНА" meta={ts ? ts.toLocaleTimeString("ru-RU", { hour12: false }) : ""} />
-              <div style={{ display: "grid", gridTemplateColumns: "24px 1.5fr 78px 60px 56px 56px 60px 18px", padding: "6px 12px", background: "var(--bg-2)", fontFamily: "var(--font-mono)", fontSize: 8.5, color: "var(--text-dim)", letterSpacing: 0.05, textTransform: "uppercase" }}>
-                <span>#</span><span>Стратегия</span><span style={{ textAlign: "right" }}>Прибыль</span><span style={{ textAlign: "right" }}>ROI</span><span style={{ textAlign: "right" }}>Win</span><span style={{ textAlign: "right" }}>Сд.</span><span style={{ textAlign: "right" }}>PF</span><span />
+              <div style={{ display: "grid", gridTemplateColumns: "22px 1.5fr 66px 50px 54px 44px 38px 48px 16px", padding: "6px 12px", background: "var(--bg-2)", fontFamily: "var(--font-mono)", fontSize: 8.5, color: "var(--text-dim)", letterSpacing: 0.05, textTransform: "uppercase" }}>
+                <span>#</span><span>Стратегия</span><span style={{ textAlign: "right" }}>Прибыль</span><span style={{ textAlign: "right" }} title="в выборке (обучение)">Train</span><span style={{ textAlign: "right", color: "var(--accent-2)" }} title="вне выборки — честный результат на тесте">OOS</span><span style={{ textAlign: "right" }}>Win</span><span style={{ textAlign: "right" }}>Сд.</span><span style={{ textAlign: "right" }}>PF</span><span />
               </div>
               <div className="scroll" style={{ maxHeight: 420, overflowY: "auto" }}>
                 {rows.map((r, i) => (
                   <React.Fragment key={i}>
                     <div onClick={() => setExpanded(expanded === i ? null : i)} title="Показать правила и план входа"
-                      style={{ display: "grid", gridTemplateColumns: "24px 1.5fr 78px 60px 56px 56px 60px 18px", padding: "6px 12px", borderBottom: expanded === i ? "none" : "1px solid var(--line)", fontFamily: "var(--font-mono)", fontSize: 10.5, alignItems: "center", cursor: "pointer", background: expanded === i ? "var(--bg-2)" : i === 0 ? "var(--accent-soft)" : "transparent" }}>
+                      style={{ display: "grid", gridTemplateColumns: "22px 1.5fr 66px 50px 54px 44px 38px 48px 16px", padding: "6px 12px", borderBottom: expanded === i ? "none" : "1px solid var(--line)", fontFamily: "var(--font-mono)", fontSize: 10.5, alignItems: "center", cursor: "pointer", background: expanded === i ? "var(--bg-2)" : i === 0 ? "var(--accent-soft)" : "transparent" }}>
                       <span style={{ color: i === 0 ? "var(--accent)" : "var(--text-dim)" }}>{i === 0 ? "★" : i + 1}</span>
                       <span style={{ minWidth: 0, display: "flex", alignItems: "center", gap: 5 }}>
                         <span style={{ width: 6, height: 6, borderRadius: 2, background: SRC_CFG[r.source].color, flexShrink: 0 }} />
                         <span style={{ color: "var(--text-bright)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name}</span>
                       </span>
                       <span style={{ textAlign: "right", color: r.profit >= 0 ? "var(--green)" : "var(--red)", fontWeight: 600 }}>{r.profit >= 0 ? "+" : "−"}${Math.abs(r.profit).toFixed(0)}</span>
-                      <span style={{ textAlign: "right", color: r.totalReturn >= 0 ? "var(--green)" : "var(--red)" }}>{r.totalReturn >= 0 ? "+" : ""}{r.totalReturn.toFixed(1)}%</span>
+                      <span style={{ textAlign: "right", color: (r.trainReturn != null && r.trainReturn - r.totalReturn > 10) ? "var(--amber)" : "var(--text-dim)" }} title={r.trainReturn != null && r.trainReturn - r.totalReturn > 10 ? "сильно лучше в выборке — риск переобучения" : "результат на обучающей части"}>{r.trainReturn != null ? `${r.trainReturn >= 0 ? "+" : ""}${r.trainReturn.toFixed(1)}` : "—"}</span>
+                      <span style={{ textAlign: "right", color: r.totalReturn >= 0 ? "var(--green)" : "var(--red)", fontWeight: 600 }}>{r.totalReturn >= 0 ? "+" : ""}{r.totalReturn.toFixed(1)}%</span>
                       <span style={{ textAlign: "right", color: r.winRate >= 50 ? "var(--green)" : "var(--amber)" }}>{r.winRate.toFixed(0)}%</span>
                       <span style={{ textAlign: "right", color: "var(--text-dim)" }}>{r.trades}</span>
                       <span style={{ textAlign: "right", color: r.profitFactor >= 1 ? "var(--green)" : "var(--red)" }}>{r.profitFactor.toFixed(2)}</span>
@@ -177,7 +178,7 @@ function SimulatorPage({ lang }) {
           </div>
 
           <div style={{ background: "var(--bg-2)", border: "1px dashed var(--line-bright)", borderRadius: 3, padding: "8px 12px", fontSize: 10.5, color: "var(--text-mid)", lineHeight: 1.5 }}>
-            <span className="accent">↳ </span>Прогон тестирует встроенную библиотеку + сгенерированные стратегии на одних и тех же реальных свечах. «Эволюция» мутирует лучших из прошлого прогона (учится на том, что сработало). Любая плюсовая за прогон стратегия сохраняется в «Чемпионы» и копит историю. Прошлые результаты не гарантируют будущих.
+            <span className="accent">↳ </span>Walk-forward: свечи делятся на обучение (первые ~65%) и тест (остаток). Стратегии оцениваются на обеих частях, но в рейтинг, чемпионы и эволюцию идёт результат <b>OOS</b> — на тестовой части, которую стратегия «не видела». Столбец <b>Train</b> рядом: если он сильно выше OOS (подсвечен) — стратегия переобучена под историю. «Эволюция» мутирует лучших по OOS из прошлого прогона. Прошлые результаты не гарантируют будущих.
           </div>
         </>
       ) : (
