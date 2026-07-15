@@ -190,6 +190,9 @@ function BrainPage({ lang }) {
             </div>
           </div>
 
+          {/* External context — macro fuse, BTC↔Nasdaq regime, stablecoin peg */}
+          {typeof ExternalSignalsPanel === "function" && <ExternalSignalsPanel />}
+
           {/* Coin tiles — click for a detailed breakdown */}
           <div className="panel" style={{ padding: 0, overflow: "hidden" }}>
             <PanelHeader title="МОНЕТЫ · КЛИК ДЛЯ РАЗБОРА" meta={`${brain.bull} вверх · ${brain.bear} вниз · ${brain.neutral} боковик`} />

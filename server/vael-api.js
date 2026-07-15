@@ -144,6 +144,38 @@ async function getAirdropTvl() {
   return out;
 }
 
+/* ── Traditional markets (Yahoo Finance, free) — proxied because the browser is
+ * CORS-blocked and Stooq gates with an anti-bot wall. Used to measure the
+ * BTC↔Nasdaq correlation regime (risk-on/off). Daily bars → 30-min cache. ── */
+const STOCK_SYMBOLS = { nasdaq: "QQQ", sp500: "%5EGSPC", dxy: "DX-Y.NYB", gold: "GC%3DF" };
+let stocksCache = { ts: 0, data: null };
+async function getStocks() {
+  if (stocksCache.data && Date.now() - stocksCache.ts < 30 * 60 * 1000) return stocksCache.data;
+  const out = {};
+  await Promise.all(Object.entries(STOCK_SYMBOLS).map(async ([key, ysym]) => {
+    try {
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ysym}?interval=1d&range=3mo`;
+      const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0 (VAEL)" } });
+      const j = await res.json();
+      const r = j && j.chart && j.chart.result && j.chart.result[0];
+      if (!r) return;
+      const ts = r.timestamp || [];
+      const closesRaw = (r.indicators && r.indicators.quote && r.indicators.quote[0].close) || [];
+      const dates = [], closes = [];
+      for (let i = 0; i < ts.length; i++) {
+        if (closesRaw[i] == null) continue;
+        dates.push(new Date(ts[i] * 1000).toISOString().slice(0, 10));
+        closes.push(+closesRaw[i]);
+      }
+      if (!closes.length) return;
+      const last = closes[closes.length - 1], prev = closes[closes.length - 2] || last;
+      out[key] = { symbol: ysym.replace(/%5E|%3D/g, ""), dates, closes, last, chgPct: prev ? (last - prev) / prev * 100 : 0 };
+    } catch (_) {}
+  }));
+  stocksCache = { ts: Date.now(), data: out };
+  return out;
+}
+
 /* ── Optional LLM proxy (keeps the Anthropic key on the server) ── */
 async function askLLM(q, context) {
   const key = process.env.ANTHROPIC_API_KEY;
@@ -193,6 +225,10 @@ const server = http.createServer(async (req, res) => {
     }
     if (u.pathname === "/api/airdrop-tvl") {
       res.end(JSON.stringify({ ok: true, tvl: await getAirdropTvl() }));
+      return;
+    }
+    if (u.pathname === "/api/stocks") {
+      res.end(JSON.stringify({ ok: true, stocks: await getStocks() }));
       return;
     }
     if (u.pathname === "/api/bybit/account") {
