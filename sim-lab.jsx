@@ -101,6 +101,18 @@ function strategyLibrary() {
     { name: "Stochastic Reversal", source: "builtin", genes: { side: "buy", trendFilter: "up", trigger: "stochCrossUp", stochTh: 25, slAtr: 1.5, tpR: 1.8 } },
     { name: "MACD Short", source: "builtin", genes: { side: "sell", trendFilter: "down", trigger: "macdDown", slAtr: 1.5, tpR: 1.8 } },
     { name: "Supertrend Short", source: "builtin", genes: { side: "sell", trendFilter: "any", trigger: "stFlipDown", slAtr: 1.5, tpR: 1.8 } },
+
+    /* Canonical public trading systems (the rules are common knowledge; expressed
+     * here in our genes model). See Edwards & Magee, Murphy, and the Turtle rules. */
+    // Turtle System — Donchian breakout, wide 2×ATR (2N) stop, let winners run.
+    { name: "Turtle Breakout", source: "builtin", genes: { side: "buy", trendFilter: "any", trigger: "donchBreakUp", slAtr: 2, tpR: 3 } },
+    { name: "Turtle Breakout Short", source: "builtin", genes: { side: "sell", trendFilter: "any", trigger: "donchBreakDown", slAtr: 2, tpR: 3 } },
+    // Dow Theory — ride the confirmed primary uptrend only when it's strong (ADX≥25).
+    { name: "Dow Trend Rider", source: "builtin", genes: { side: "buy", trendFilter: "up", trigger: "macdUp", adxMin: 25, slAtr: 1.8, tpR: 2.5 } },
+    // Connors RSI-2 style — buy a deep pullback inside an uptrend, quick target.
+    { name: "RSI-2 Pullback", source: "builtin", genes: { side: "buy", trendFilter: "up", trigger: "rsiOversold", rsiTh: 30, slAtr: 1.2, tpR: 1.4 } },
+    // Bollinger fade — mean-revert the upper band poke while the trend is down.
+    { name: "Bollinger Fade Short", source: "builtin", genes: { side: "sell", trendFilter: "down", trigger: "bbUpper", slAtr: 1.5, tpR: 1.6 } },
   ];
 }
 
