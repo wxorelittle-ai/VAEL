@@ -10,8 +10,20 @@
 
 const http = require("http");
 const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
 
 const PORT = process.env.PORT || 8787;
+
+/* ── Cloud save: persist a per-device state blob (demo trades, champions, budget)
+ * to a JSON file so it survives a browser wipe / device switch. No auth — keyed by
+ * a client-generated device id. Single small blob per device. ── */
+const DATA_DIR = process.env.VAEL_DATA_DIR || path.join(__dirname, "data");
+try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch (_) {}
+function safePid(pid) { return String(pid || "").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 64) || "default"; }
+function stateFile(pid) { return path.join(DATA_DIR, safePid(pid) + ".json"); }
+function loadState(pid) { try { return JSON.parse(fs.readFileSync(stateFile(pid), "utf8")); } catch (_) { return null; } }
+function saveState(pid, state) { try { fs.writeFileSync(stateFile(pid), JSON.stringify({ state, savedAt: Date.now() })); return true; } catch (_) { return false; } }
 
 /* ── Bybit private (READ-ONLY key recommended) — HMAC-signed v5 requests.
  * Keys stay in server env (BYBIT_API_KEY / BYBIT_API_SECRET), never in the browser. */
@@ -245,6 +257,21 @@ const server = http.createServer(async (req, res) => {
       const out = await askLLM(q, ctx);
       res.statusCode = out.ok ? 200 : 503;
       res.end(JSON.stringify(out));
+      return;
+    }
+    if (u.pathname === "/api/state") {
+      const pid = safePid(u.searchParams.get("pid"));
+      if (req.method === "POST") {
+        let body = {};
+        try { body = JSON.parse((await readBody(req)) || "{}"); } catch (_) {}
+        const state = body && body.state !== undefined ? body.state : body;
+        const ok = saveState(pid, state);
+        res.statusCode = ok ? 200 : 500;
+        res.end(JSON.stringify({ ok, pid }));
+        return;
+      }
+      const saved = loadState(pid);
+      res.end(JSON.stringify({ ok: true, pid, state: saved ? saved.state : null, savedAt: saved ? saved.savedAt : 0 }));
       return;
     }
     res.statusCode = 404;
