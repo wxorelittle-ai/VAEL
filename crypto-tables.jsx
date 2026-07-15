@@ -19,7 +19,12 @@ function OpenPositionsTable({ positions, onClose }) {
         const lev = p.lev || 1;
         const margin = p.margin != null ? p.margin : p.size;
         const dec = p.entry < 10 ? 4 : 2;
+        // full trade commission (entry + exit) so it matches what closing actually
+        // charges — the exit leg is estimated at the current price, same formula as
+        // closePosition. Showing only the entry leg made the close look 2× bigger.
         const entryFee = p.entryFee != null ? p.entryFee : p.size * FEE_RATE;
+        const exitFeeEst = p.size * ((p.currentPrice || p.entry) / p.entry) * FEE_RATE;
+        const feeRoundTrip = entryFee + exitFeeEst;
         return (
           <div key={p.id} style={{
             display: "grid", gridTemplateColumns: "66px 62px 50px 70px 74px 74px 74px 58px 70px 66px 66px",
@@ -35,7 +40,7 @@ function OpenPositionsTable({ positions, onClose }) {
             <span style={{ color: "var(--text-mid)" }}>{p.entry.toFixed(dec)}</span>
             <span style={{ color: "var(--text-bright)" }}>{p.currentPrice.toFixed(dec)}</span>
             <span style={{ color: p.liq ? "var(--red)" : "var(--text-dim)" }}>{p.liq ? p.liq.toFixed(dec) : "—"}</span>
-            <span style={{ color: "var(--amber)" }} title="комиссия за вход (уплачена)">−{entryFee.toFixed(2)}</span>
+            <span style={{ color: "var(--amber)" }} title="комиссия за сделку: вход + выход (round-trip, выход оценён по текущей цене)">−{feeRoundTrip.toFixed(2)}</span>
             <span style={{ color: pnlColor }}>{p.pnl >= 0 ? "+" : ""}{p.pnl.toFixed(2)}</span>
             <span style={{ color: pnlColor, fontWeight: 600 }}>{p.pnlPct >= 0 ? "+" : ""}{p.pnlPct.toFixed(1)}%</span>
             <button onClick={() => onClose(p.id)} style={{
