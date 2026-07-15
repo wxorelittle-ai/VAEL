@@ -1,7 +1,7 @@
-/* simulator.jsx — "Симулятор стратегий": runs every strategy on real Bybit
- * candles for the chosen asset/period and shows the P&L per strategy as a ranked
- * leaderboard + overlaid equity curves. Reuses the real backtest engine
- * (realBacktest / strategyTrade from tools.jsx) — no invented numbers. */
+/* simulator.jsx — Strategy Lab. Backtests the built-in strategy library, GENERATES
+ * its own strategies and EVOLVES the winners of the previous run, all on real
+ * Bybit candles. Any strategy profitable on the day is kept as a "champion" and
+ * tracked across runs so you see performance in dynamics. Engine: sim-lab.jsx. */
 
 const SIM_COINS = [
   { sym: "BTC", bybit: "BTCUSDT" }, { sym: "ETH", bybit: "ETHUSDT" },
@@ -9,17 +9,16 @@ const SIM_COINS = [
   { sym: "XRP", bybit: "XRPUSDT" }, { sym: "AVAX", bybit: "AVAXUSDT" },
   { sym: "LINK", bybit: "LINKUSDT" }, { sym: "DOGE", bybit: "DOGEUSDT" },
 ];
-const SIM_STRATEGIES = [
-  { id: "ai-signals",   name: "AI Signals",        color: "var(--accent)" },
-  { id: "momentum",     name: "Momentum",          color: "var(--green)" },
-  { id: "mean-rev",     name: "Mean Reversion",    color: "var(--blue)" },
-  { id: "vol-breakout", name: "Volatility Breakout", color: "var(--accent-2)" },
-];
 const SIM_PERIODS = [
-  { id: "day",   label: "День",   interval: "15",  limit: 200 },
-  { id: "week",  label: "Неделя", interval: "60",  limit: 200 },
-  { id: "month", label: "Месяц",  interval: "240", limit: 200 },
+  { id: "day", label: "День", interval: "15", limit: 200 },
+  { id: "week", label: "Неделя", interval: "60", limit: 200 },
+  { id: "month", label: "Месяц", interval: "240", limit: 200 },
 ];
+const SRC_CFG = {
+  builtin:   { label: "встроенная", color: "var(--accent)" },
+  generated: { label: "сгенерирована", color: "var(--blue)" },
+  evolved:   { label: "эволюция", color: "var(--accent-2)" },
+};
 
 function SimulatorPage({ lang }) {
   const [coinIdx, setCoinIdx] = useState(0);
@@ -27,146 +26,171 @@ function SimulatorPage({ lang }) {
   const [capital, setCapital] = useState(() => { try { return +localStorage.getItem("vael.budget") || 10000; } catch (_) { return 10000; } });
   const [lev, setLev] = useState(1);
   const [running, setRunning] = useState(false);
-  const [results, setResults] = useState(null);
+  const [rows, setRows] = useState(null);
+  const [champs, setChamps] = useState(() => (typeof loadChampions === "function" ? loadChampions() : []));
+  const [gen, setGen] = useState(0);
   const [ts, setTs] = useState(null);
+  const seedRef = useRef([]);
 
   const coin = SIM_COINS[coinIdx];
   const period = SIM_PERIODS.find(p => p.id === periodId);
 
-  async function run() {
-    if (typeof bybitFetchKlines !== "function" || typeof realBacktest !== "function") return;
-    setRunning(true); setResults(null);
+  async function run(evolve = false) {
+    if (typeof bybitFetchKlines !== "function" || typeof runSimLab !== "function") return;
+    setRunning(true);
     try {
       const candles = await bybitFetchKlines(coin.bybit, period.interval, period.limit);
-      const rows = SIM_STRATEGIES.map(s => {
-        try {
-          const r = realBacktest(candles, { capital, leverage: lev, fees: 0.02, strategy: s.id });
-          return { ...s, ...r.stats, curve: r.curve, profit: capital * r.stats.totalReturn / 100 };
-        } catch (_) { return { ...s, totalReturn: 0, trades: 0, winRate: 0, sharpe: 0, maxDD: 0, profitFactor: 0, curve: [{ v: capital }], profit: 0 }; }
-      }).sort((a, b) => b.totalReturn - a.totalReturn);
-      setResults({ rows, candles: candles.length });
+      const seeds = evolve ? seedRef.current : [];
+      const cfg = { capital, leverage: lev, fees: 0.02, genCount: 8, genSeed: (evolve ? gen * 8 : 0) };
+      const r = runSimLab(candles, cfg, seeds);
+      setRows(r);
+      seedRef.current = r.slice(0, 4).filter(x => x.genes).map(x => x.genes);   // winners → next evolution
+      setGen(g => evolve ? g + 1 : 1);
+      const nowMs = period.limit ? Date.now() : Date.now();
+      if (typeof recordChampions === "function") setChamps(recordChampions(r, coin.sym, nowMs));
       setTs(new Date());
-    } catch (_) { setResults({ rows: [], candles: 0 }); }
+    } catch (_) { setRows([]); }
     setRunning(false);
   }
-  useEffect(() => { run(); /* auto-run on open */ /* eslint-disable-next-line */ }, []);
+  useEffect(() => { run(false); /* eslint-disable-next-line */ }, []);
+  useEffect(() => { setGen(0); seedRef.current = []; }, [coinIdx, periodId]);
 
-  const best = results && results.rows[0];
-  const totalProfit = results ? results.rows.reduce((s, r) => s + r.profit, 0) : 0;
+  const best = rows && rows[0];
+  const bySrc = rows ? { builtin: rows.filter(r => r.source === "builtin").length, generated: rows.filter(r => r.source === "generated").length, evolved: rows.filter(r => r.source === "evolved").length } : null;
 
   return (
-    <div className="scroll" style={{ minHeight: "100%", overflowY: "auto", padding: "var(--gap)", display: "flex", flexDirection: "column", gap: "var(--gap)" }}>
-      {/* Header */}
+    <div style={{ minHeight: "100%", padding: "var(--gap)", display: "flex", flexDirection: "column", gap: "var(--gap)" }}>
       <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
         <div>
           <div style={{ fontSize: 18, fontWeight: 600, color: "var(--text-bright)", letterSpacing: "-0.01em" }}>
-            Симулятор стратегий <span style={{ color: "var(--text-dim)", fontWeight: 400 }}>· прибыль по стратегиям</span>
+            Лаборатория стратегий <span style={{ color: "var(--text-dim)", fontWeight: 400 }}>· библиотека + генерация + эволюция</span>
           </div>
           <div className="mono" style={{ fontSize: 10.5, color: "var(--text-dim)", marginTop: 3 }}>
-            реальный бэктест движка на свечах Bybit · комиссия 0.02% · без наложения сделок
+            реальный бэктест на свечах Bybit · комиссия 0.02% · прибыльные стратегии остаются и отслеживаются в динамике
           </div>
         </div>
-        {typeof LiveTag === "function" && <LiveTag status={running ? "connecting" : results ? "live" : "rest"} />}
+        {typeof LiveTag === "function" && <LiveTag status={running ? "connecting" : rows ? "live" : "rest"} />}
       </div>
 
       {/* Controls */}
-      <div className="panel" style={{ padding: "10px 14px", display: "flex", flexWrap: "wrap", gap: 18, alignItems: "center" }}>
-        <SimGroup label="Актив">
-          {SIM_COINS.map((c, i) => <SimBtn key={c.sym} on={i === coinIdx} onClick={() => setCoinIdx(i)}>{c.sym}</SimBtn>)}
-        </SimGroup>
-        <SimGroup label="Период">
-          {SIM_PERIODS.map(p => <SimBtn key={p.id} on={periodId === p.id} onClick={() => setPeriodId(p.id)}>{p.label}</SimBtn>)}
-        </SimGroup>
-        <SimGroup label="Плечо">
-          {[1, 2, 5, 10].map(l => <SimBtn key={l} on={lev === l} onClick={() => setLev(l)}>{l}x</SimBtn>)}
-        </SimGroup>
+      <div className="panel" style={{ padding: "10px 14px", display: "flex", flexWrap: "wrap", gap: 16, alignItems: "center" }}>
+        <SimGroup label="Актив">{SIM_COINS.map((c, i) => <SimBtn key={c.sym} on={i === coinIdx} onClick={() => setCoinIdx(i)}>{c.sym}</SimBtn>)}</SimGroup>
+        <SimGroup label="Период">{SIM_PERIODS.map(p => <SimBtn key={p.id} on={periodId === p.id} onClick={() => setPeriodId(p.id)}>{p.label}</SimBtn>)}</SimGroup>
+        <SimGroup label="Плечо">{[1, 2, 5, 10].map(l => <SimBtn key={l} on={lev === l} onClick={() => setLev(l)}>{l}x</SimBtn>)}</SimGroup>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--text-dim)", textTransform: "uppercase" }}>Капитал</span>
           <input type="number" value={capital} onChange={e => setCapital(Math.max(100, +e.target.value || 0))}
-            style={{ width: 90, background: "var(--bg-0)", border: "1px solid var(--line-bright)", color: "var(--text-bright)", fontFamily: "var(--font-mono)", fontSize: 11, padding: "4px 7px", borderRadius: 3, outline: "none", textAlign: "right" }} />
+            style={{ width: 88, background: "var(--bg-0)", border: "1px solid var(--line-bright)", color: "var(--text-bright)", fontFamily: "var(--font-mono)", fontSize: 11, padding: "4px 7px", borderRadius: 3, outline: "none", textAlign: "right" }} />
           <span className="mono" style={{ fontSize: 10, color: "var(--text-dim)" }}>$</span>
         </div>
-        <button onClick={run} disabled={running} className="btn btn-accent" style={{ marginLeft: "auto" }}>
-          {running ? "⌛ считаю…" : "▸ Запустить симуляцию"}
-        </button>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+          <button onClick={() => run(false)} disabled={running} className="btn">{running ? "⌛…" : "▸ Прогнать"}</button>
+          <button onClick={() => run(true)} disabled={running || !rows} className="btn btn-accent" title="Мутирует лучших из прошлого прогона и тестирует потомков">
+            ⟳ Эволюция{gen > 0 ? ` · пок.${gen}` : ""}
+          </button>
+        </div>
       </div>
 
-      {running && !results ? (
-        <div className="panel" style={{ padding: 40, textAlign: "center", color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: 12 }}>
-          прогоняю {SIM_STRATEGIES.length} стратегии на свечах {coin.sym}…
-        </div>
-      ) : results && results.rows.length ? (
+      {running && !rows ? (
+        <div className="panel" style={{ padding: 40, textAlign: "center", color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: 12 }}>прогоняю стратегии на свечах {coin.sym}…</div>
+      ) : rows && rows.length ? (
         <>
           {/* Summary */}
           <div className="panel" style={{ display: "flex", flexWrap: "wrap" }}>
-            <SimStat label={`ЛУЧШАЯ · ${period.label.toUpperCase()}`} v={best.name} c={best.color}
-              sub={`${best.totalReturn >= 0 ? "+" : ""}${best.totalReturn.toFixed(1)}% · ${best.trades} сделок`} />
+            <SimStat label={`ЛУЧШАЯ · ${period.label.toUpperCase()}`} v={best.name} c={SRC_CFG[best.source].color}
+              sub={`${best.totalReturn >= 0 ? "+" : ""}${best.totalReturn.toFixed(1)}% · ${SRC_CFG[best.source].label}`} />
             <SimStat label="ПРИБЫЛЬ ЛУЧШЕЙ" v={`${best.profit >= 0 ? "+" : "−"}$${Math.abs(best.profit).toFixed(0)}`}
-              c={best.profit >= 0 ? "var(--green)" : "var(--red)"} sub={`капитал $${capital.toLocaleString("en-US")} · ${lev}x`} />
-            <SimStat label="ВИНРЕЙТ ЛУЧШЕЙ" v={`${best.winRate.toFixed(0)}%`} c={best.winRate >= 50 ? "var(--green)" : "var(--amber)"} sub={`PF ${best.profitFactor.toFixed(2)}`} />
-            <SimStat label="СРЕДНЕЕ ПО СТРАТЕГИЯМ" v={`${totalProfit / results.rows.length >= 0 ? "+" : "−"}$${Math.abs(totalProfit / results.rows.length).toFixed(0)}`}
-              c={totalProfit >= 0 ? "var(--green)" : "var(--red)"} sub={`${results.candles} свечей ${coin.sym}`} />
+              c={best.profit >= 0 ? "var(--green)" : "var(--red)"} sub={`капитал $${capital.toLocaleString("en-US")} · ${lev}x · win ${best.winRate.toFixed(0)}%`} />
+            <SimStat label="СТРАТЕГИЙ В ПРОГОНЕ" v={rows.length}
+              c="var(--text-bright)" sub={bySrc ? `${bySrc.builtin} встр · ${bySrc.generated} ген · ${bySrc.evolved} эво` : ""} />
+            <SimStat label="ПРИБЫЛЬНЫХ" v={rows.filter(r => r.totalReturn > 0).length}
+              c="var(--green)" sub={`из ${rows.length} · чемпионов ${champs.length}`} />
           </div>
 
-          {/* Equity curves */}
-          <div className="panel" style={{ padding: 0, overflow: "hidden" }}>
-            <PanelHeader title={`КРИВЫЕ КАПИТАЛА · ${coin.sym} · ${period.label.toUpperCase()}`} meta={`старт $${capital.toLocaleString("en-US")} · ${lev}x`} />
-            <div style={{ padding: 12 }}>
-              <SimCurves rows={results.rows} capital={capital} width={860} height={220} />
-            </div>
-          </div>
-
-          {/* Leaderboard */}
-          <div className="panel" style={{ padding: 0, overflow: "hidden" }}>
-            <PanelHeader title="РЕЙТИНГ СТРАТЕГИЙ" meta={ts ? `сформирован ${ts.toLocaleTimeString("ru-RU", { hour12: false })}` : ""} />
-            <div style={{ display: "grid", gridTemplateColumns: "26px 1.4fr 90px 90px 70px 60px 70px 70px", padding: "6px 14px", background: "var(--bg-2)", fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--text-dim)", letterSpacing: 0.06, textTransform: "uppercase" }}>
-              <span>#</span><span>Стратегия</span><span style={{ textAlign: "right" }}>Прибыль</span><span style={{ textAlign: "right" }}>ROI</span><span style={{ textAlign: "right" }}>Win</span><span style={{ textAlign: "right" }}>Сделок</span><span style={{ textAlign: "right" }}>PF</span><span style={{ textAlign: "right" }}>MaxDD</span>
-            </div>
-            {results.rows.map((r, i) => (
-              <div key={r.id} style={{ display: "grid", gridTemplateColumns: "26px 1.4fr 90px 90px 70px 60px 70px 70px", padding: "7px 14px", borderBottom: "1px solid var(--line)", fontFamily: "var(--font-mono)", fontSize: 11, alignItems: "center", background: i === 0 ? "var(--accent-soft)" : "transparent" }}>
-                <span style={{ color: i === 0 ? "var(--accent)" : "var(--text-dim)" }}>{i === 0 ? "★" : i + 1}</span>
-                <span style={{ color: "var(--text-bright)", display: "flex", alignItems: "center", gap: 6 }}>
-                  <span style={{ width: 8, height: 8, borderRadius: 2, background: r.color, display: "inline-block" }} />{r.name}
-                </span>
-                <span style={{ textAlign: "right", color: r.profit >= 0 ? "var(--green)" : "var(--red)", fontWeight: 600 }}>{r.profit >= 0 ? "+" : "−"}${Math.abs(r.profit).toFixed(0)}</span>
-                <span style={{ textAlign: "right", color: r.totalReturn >= 0 ? "var(--green)" : "var(--red)" }}>{r.totalReturn >= 0 ? "+" : ""}{r.totalReturn.toFixed(1)}%</span>
-                <span style={{ textAlign: "right", color: r.winRate >= 50 ? "var(--green)" : "var(--amber)" }}>{r.winRate.toFixed(0)}%</span>
-                <span style={{ textAlign: "right", color: "var(--text-dim)" }}>{r.trades}</span>
-                <span style={{ textAlign: "right", color: r.profitFactor >= 1 ? "var(--green)" : "var(--red)" }}>{r.profitFactor.toFixed(2)}</span>
-                <span style={{ textAlign: "right", color: "var(--amber)" }}>−{r.maxDD.toFixed(1)}%</span>
+          <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: "var(--gap)", alignItems: "start" }}>
+            {/* Leaderboard */}
+            <div className="panel" style={{ padding: 0, overflow: "hidden" }}>
+              <PanelHeader title="РЕЙТИНГ ПРОГОНА" meta={ts ? ts.toLocaleTimeString("ru-RU", { hour12: false }) : ""} />
+              <div style={{ display: "grid", gridTemplateColumns: "24px 1.5fr 78px 60px 56px 56px 60px", padding: "6px 12px", background: "var(--bg-2)", fontFamily: "var(--font-mono)", fontSize: 8.5, color: "var(--text-dim)", letterSpacing: 0.05, textTransform: "uppercase" }}>
+                <span>#</span><span>Стратегия</span><span style={{ textAlign: "right" }}>Прибыль</span><span style={{ textAlign: "right" }}>ROI</span><span style={{ textAlign: "right" }}>Win</span><span style={{ textAlign: "right" }}>Сд.</span><span style={{ textAlign: "right" }}>PF</span>
               </div>
-            ))}
+              <div className="scroll" style={{ maxHeight: 360, overflowY: "auto" }}>
+                {rows.map((r, i) => (
+                  <div key={i} style={{ display: "grid", gridTemplateColumns: "24px 1.5fr 78px 60px 56px 56px 60px", padding: "6px 12px", borderBottom: "1px solid var(--line)", fontFamily: "var(--font-mono)", fontSize: 10.5, alignItems: "center", background: i === 0 ? "var(--accent-soft)" : "transparent" }}>
+                    <span style={{ color: i === 0 ? "var(--accent)" : "var(--text-dim)" }}>{i === 0 ? "★" : i + 1}</span>
+                    <span style={{ minWidth: 0, display: "flex", alignItems: "center", gap: 5 }}>
+                      <span style={{ width: 6, height: 6, borderRadius: 2, background: SRC_CFG[r.source].color, flexShrink: 0 }} />
+                      <span style={{ color: "var(--text-bright)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name}</span>
+                    </span>
+                    <span style={{ textAlign: "right", color: r.profit >= 0 ? "var(--green)" : "var(--red)", fontWeight: 600 }}>{r.profit >= 0 ? "+" : "−"}${Math.abs(r.profit).toFixed(0)}</span>
+                    <span style={{ textAlign: "right", color: r.totalReturn >= 0 ? "var(--green)" : "var(--red)" }}>{r.totalReturn >= 0 ? "+" : ""}{r.totalReturn.toFixed(1)}%</span>
+                    <span style={{ textAlign: "right", color: r.winRate >= 50 ? "var(--green)" : "var(--amber)" }}>{r.winRate.toFixed(0)}%</span>
+                    <span style={{ textAlign: "right", color: "var(--text-dim)" }}>{r.trades}</span>
+                    <span style={{ textAlign: "right", color: r.profitFactor >= 1 ? "var(--green)" : "var(--red)" }}>{r.profitFactor.toFixed(2)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Champions in dynamics */}
+            <div className="panel" style={{ padding: 0, overflow: "hidden" }}>
+              <PanelHeader title="ЧЕМПИОНЫ · ДИНАМИКА" meta={`${champs.length} прибыльных стратегий`} />
+              {champs.length === 0 ? (
+                <div style={{ padding: "14px 12px", fontFamily: "var(--font-mono)", fontSize: 10.5, color: "var(--text-dim)", lineHeight: 1.5 }}>
+                  Прибыльные стратегии появятся здесь и будут накапливать историю от прогона к прогону.
+                </div>
+              ) : (
+                <div className="scroll" style={{ maxHeight: 360, overflowY: "auto", padding: "4px 0" }}>
+                  {champs.slice(0, 12).map((c, i) => {
+                    const cr = cumRoi(c), n = c.history.length;
+                    return (
+                      <div key={c.key} style={{ display: "grid", gridTemplateColumns: "1fr 80px 44px", gap: 6, alignItems: "center", padding: "6px 12px", borderBottom: "1px solid var(--line)" }}>
+                        <span style={{ minWidth: 0 }}>
+                          <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                            <span style={{ width: 6, height: 6, borderRadius: 2, background: SRC_CFG[c.source] ? SRC_CFG[c.source].color : "var(--accent)", flexShrink: 0 }} />
+                            <span style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, color: "var(--text-bright)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.name}</span>
+                          </span>
+                          <span style={{ fontFamily: "var(--font-mono)", fontSize: 8.5, color: "var(--text-dim)" }}>{c.asset} · {n} прогон{n === 1 ? "" : "ов"}</span>
+                        </span>
+                        <ChampSpark history={c.history} width={80} height={22} />
+                        <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 600, color: cr >= 0 ? "var(--green)" : "var(--red)" }}>{cr >= 0 ? "+" : ""}{cr.toFixed(0)}%</span>
+                      </div>
+                    );
+                  })}
+                  {champs.length > 0 && (
+                    <div style={{ padding: "6px 12px" }}>
+                      <button onClick={() => { saveChampions([]); setChamps([]); }} className="btn" style={{ fontSize: 9.5, width: "100%" }}>Сбросить чемпионов</button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
 
           <div style={{ background: "var(--bg-2)", border: "1px dashed var(--line-bright)", borderRadius: 3, padding: "8px 12px", fontSize: 10.5, color: "var(--text-mid)", lineHeight: 1.5 }}>
-            <span className="accent">↳ </span>Каждая стратегия прогнана по одним и тем же реальным свечам Bybit: вход по её правилам, ATR-стоп/цель, комиссия 0.02% на сторону, сделки не перекрываются. Прошлые результаты не гарантируют будущих — это не инвестиционная рекомендация.
+            <span className="accent">↳ </span>Прогон тестирует встроенную библиотеку + сгенерированные стратегии на одних и тех же реальных свечах. «Эволюция» мутирует лучших из прошлого прогона (учится на том, что сработало). Любая плюсовая за прогон стратегия сохраняется в «Чемпионы» и копит историю. Прошлые результаты не гарантируют будущих.
           </div>
         </>
       ) : (
-        <div className="panel" style={{ padding: 40, textAlign: "center", color: "var(--red)", fontFamily: "var(--font-mono)", fontSize: 12 }}>
-          не удалось загрузить свечи · проверьте соединение
-        </div>
+        <div className="panel" style={{ padding: 40, textAlign: "center", color: "var(--red)", fontFamily: "var(--font-mono)", fontSize: 12 }}>не удалось загрузить свечи · проверьте соединение</div>
       )}
     </div>
   );
 }
 
-function SimCurves({ rows, capital, width = 860, height = 220 }) {
-  const curves = rows.map(r => ({ color: r.color, name: r.name, pts: (r.curve || []).map(p => p.v) })).filter(c => c.pts.length > 1);
-  if (!curves.length) return <div style={{ height, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: 11 }}>нет сделок</div>;
-  const allVals = curves.flatMap(c => c.pts);
-  const lo = Math.min(...allVals, capital), hi = Math.max(...allVals, capital);
-  const pad = (hi - lo) * 0.08 || 1;
-  const min = lo - pad, max = hi + pad, range = max - min;
-  const padT = 10, padB = 10;
-  const y = v => padT + (1 - (v - min) / range) * (height - padT - padB);
-  const maxLen = Math.max(...curves.map(c => c.pts.length));
-  const path = pts => pts.map((v, i) => `${i === 0 ? "M" : "L"}${(i / (maxLen - 1)) * width},${y(v)}`).join(" ");
+function ChampSpark({ history, width = 80, height = 22 }) {
+  // cumulative ROI over runs
+  let acc = 0; const pts = history.map(p => (acc += p.roi));
+  if (pts.length < 2) return <div style={{ width, height, display: "flex", alignItems: "center", fontFamily: "var(--font-mono)", fontSize: 8.5, color: "var(--text-dim)" }}>1 прогон</div>;
+  const lo = Math.min(0, ...pts), hi = Math.max(0, ...pts), range = (hi - lo) || 1;
+  const y = v => 2 + (1 - (v - lo) / range) * (height - 4);
+  const stepX = width / (pts.length - 1);
+  const d = pts.map((v, i) => `${i === 0 ? "M" : "L"}${i * stepX},${y(v)}`).join(" ");
+  const up = pts[pts.length - 1] >= 0;
   return (
-    <svg width="100%" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" style={{ display: "block", background: "var(--bg-1)", borderRadius: 4 }}>
-      <line x1={0} y1={y(capital)} x2={width} y2={y(capital)} stroke="var(--text-dim)" strokeWidth={0.7} strokeDasharray="3 3" opacity={0.5} />
-      <text x={4} y={y(capital) - 3} fill="var(--text-dim)" style={{ fontFamily: "var(--font-mono)", fontSize: 9 }}>старт ${capital.toLocaleString("en-US")}</text>
-      {curves.map((c, i) => <path key={i} d={path(c.pts)} fill="none" stroke={c.color} strokeWidth={1.4} opacity={0.9} />)}
+    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ display: "block" }}>
+      <line x1={0} y1={y(0)} x2={width} y2={y(0)} stroke="var(--line)" strokeWidth={0.5} strokeDasharray="1 2" />
+      <path d={d} fill="none" stroke={up ? "var(--green)" : "var(--red)"} strokeWidth={1.2} />
     </svg>
   );
 }
@@ -192,8 +216,8 @@ function SimStat({ label, v, c, sub }) {
   return (
     <div style={{ flex: 1, minWidth: 160, padding: "12px 16px", borderRight: "1px solid var(--line)" }}>
       <div style={{ fontSize: 9, color: "var(--text-dim)", letterSpacing: 0.12, fontWeight: 600, textTransform: "uppercase" }}>{label}</div>
-      <div style={{ fontFamily: "var(--font-mono)", fontSize: 18, color: c, marginTop: 2, fontWeight: 500 }}>{v}</div>
-      {sub && <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--text-dim)", marginTop: 1 }}>{sub}</div>}
+      <div style={{ fontFamily: "var(--font-mono)", fontSize: 17, color: c, marginTop: 2, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{v}</div>
+      {sub && <div style={{ fontFamily: "var(--font-mono)", fontSize: 9.5, color: "var(--text-dim)", marginTop: 1 }}>{sub}</div>}
     </div>
   );
 }
