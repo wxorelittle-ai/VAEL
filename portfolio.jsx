@@ -634,16 +634,19 @@ function PortfolioPage({ lang }) {
   const free = Math.max(0, balance - marginUsed);
 
   // ─── period slice ───
+  // Upper bound is left OPEN (Infinity) for presets — a frozen Date.now() would
+  // drop any trade closed after the page mounted, so the newest closes never showed
+  // in the stats/curve. Recompute on history change so the window slides to "now".
   const range = useMemo(() => {
     const p = PF_PERIODS.find(x => x.id === period);
     if (period === "custom") {
       const a = from ? new Date(from + "T00:00:00").getTime() : 0;
-      const b = to ? new Date(to + "T23:59:59").getTime() : Date.now();
+      const b = to ? new Date(to + "T23:59:59").getTime() : Infinity;
       return [a, b];
     }
-    if (!p || p.days == null) return [0, Date.now()];
-    return [Date.now() - p.days * 864e5, Date.now()];
-  }, [period, from, to]);
+    if (!p || p.days == null) return [0, Infinity];              // "Всё"
+    return [Date.now() - p.days * 864e5, Infinity];             // last N days → up to now
+  }, [period, from, to, history.length]);
 
   const inPeriod = useMemo(
     () => history.filter(t => t.closedTs && t.closedTs >= range[0] && t.closedTs <= range[1]),
