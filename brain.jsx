@@ -132,7 +132,7 @@ function BrainPage({ lang }) {
   const regimeColor = brain && brain.regime === "risk-on" ? "var(--green)" : brain && brain.regime === "risk-off" ? "var(--red)" : "var(--amber)";
 
   return (
-    <div className="scroll" style={{ height: "100%", overflowY: "auto", padding: "var(--gap)", display: "flex", flexDirection: "column", gap: "var(--gap)" }}>
+    <div style={{ minHeight: "100%", padding: "var(--gap)", display: "flex", flexDirection: "column", gap: "var(--gap)" }}>
       <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
         <div>
           <div style={{ fontSize: 18, fontWeight: 600, color: "var(--text-bright)", letterSpacing: "-0.01em" }}>

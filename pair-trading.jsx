@@ -48,7 +48,7 @@ function PairTradingPage({ lang }) {
   const halfLifeH = pair && pair.halfLife ? (pair.halfLife * 15 / 60) : null; // candles(15m) → hours
 
   return (
-    <div className="scroll" style={{ height: "100%", overflowY: "auto", padding: "var(--gap)", display: "flex", flexDirection: "column", gap: "var(--gap)" }}>
+    <div style={{ minHeight: "100%", padding: "var(--gap)", display: "flex", flexDirection: "column", gap: "var(--gap)" }}>
       {/* Page header */}
       <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
         <div>

@@ -122,7 +122,7 @@ function TradePlanPage({ lang }) {
   const sideColor = p ? (p.side === "buy" ? "var(--green)" : "var(--red)") : "var(--amber)";
 
   return (
-    <div className="scroll" style={{ height: "100%", overflowY: "auto", padding: "var(--gap)", display: "flex", flexDirection: "column", gap: "var(--gap)" }}>
+    <div style={{ minHeight: "100%", padding: "var(--gap)", display: "flex", flexDirection: "column", gap: "var(--gap)" }}>
       <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
         <div>
           <div style={{ fontSize: 18, fontWeight: 600, color: "var(--text-bright)", letterSpacing: "-0.01em" }}>
@@ -213,20 +213,29 @@ function TradePlanPage({ lang }) {
           </div>
 
           {/* Indicator readout */}
-          <div className="panel" style={{ padding: 0, overflow: "hidden" }}>
-            <PanelHeader title="ПОКАЗАНИЯ ИНДИКАТОРОВ" meta="зелёный = бычий · красный = медвежий" />
-            <div style={{ padding: 12, display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6 }}>
-              {plan.indicators.map((ind, i) => {
-                const c = ind.bias > 0 ? "var(--green)" : ind.bias < 0 ? "var(--red)" : "var(--text-dim)";
-                return (
-                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: "var(--bg-0)", border: "1px solid var(--line)", borderLeft: `2px solid ${c}`, borderRadius: 3 }}>
-                    <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--text-dim)", flex: 1, minWidth: 0 }}>{ind.label}</span>
-                    <span style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, color: c, fontWeight: 600, whiteSpace: "nowrap" }}>{ind.value}</span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
+          {(() => {
+            const bull = plan.indicators.filter(x => x.bias > 0).length;
+            const bear = plan.indicators.filter(x => x.bias < 0).length;
+            return (
+              <div className="panel" style={{ padding: 0, overflow: "hidden" }}>
+                <PanelHeader title="ПОКАЗАНИЯ ИНДИКАТОРОВ"
+                  meta={`${bull} бычьих · ${bear} медвежьих · ${plan.indicators.length - bull - bear} нейтр.`} />
+                <div style={{ padding: 12, display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(210px, 1fr))", gap: 8 }}>
+                  {plan.indicators.map((ind, i) => {
+                    const c = ind.bias > 0 ? "var(--green)" : ind.bias < 0 ? "var(--red)" : "var(--text-dim)";
+                    const arrow = ind.bias > 0 ? "▲" : ind.bias < 0 ? "▼" : "◆";
+                    return (
+                      <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", background: "var(--bg-0)", border: "1px solid var(--line)", borderLeft: `3px solid ${c}`, borderRadius: 4 }}>
+                        <span style={{ color: c, fontFamily: "var(--font-mono)", fontSize: 12 }}>{arrow}</span>
+                        <span style={{ fontSize: 11.5, color: "var(--text-mid)", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ind.label}</span>
+                        <span style={{ fontFamily: "var(--font-mono)", fontSize: 11.5, color: c, fontWeight: 600, whiteSpace: "nowrap" }}>{ind.value}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
 
           <div style={{ background: "var(--bg-2)", border: "1px dashed var(--line-bright)", borderRadius: 3, padding: "8px 12px", fontSize: 10.5, color: "var(--text-mid)", lineHeight: 1.5 }}>
             <span className="accent">↳ </span>План строится живым TA-движком на реальных свечах Bybit: вход/стоп/цель — от текущего сетапа (ATR-риск), стратегия подбирается по состоянию рынка, прогноз — Monte-Carlo. Не является инвестиционной рекомендацией.
@@ -277,7 +286,10 @@ function TradePlanChart({ candles, ema, st, plan, width = 820, height = 200 }) {
     </g>
   );
   return (
-    <svg width="100%" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" style={{ display: "block", background: "var(--bg-1)", borderRadius: 4 }}>
+    // aspect-ratio wrapper: the container matches the viewBox ratio, so
+    // preserveAspectRatio="none" fills it WITHOUT stretching the candles.
+    <div style={{ width: "100%", aspectRatio: `${width} / ${height}`, background: "var(--bg-1)", borderRadius: 4 }}>
+    <svg width="100%" height="100%" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" style={{ display: "block" }}>
       {/* horizontal grid + right price axis */}
       {gridLevels.map((v, i) => (
         <g key={`g${i}`}>
@@ -301,6 +313,7 @@ function TradePlanChart({ candles, ema, st, plan, width = 820, height = 200 }) {
       {plan && tag(plan.entry, "var(--accent-2)", plan.side === "buy" ? "▲ ВХОД" : "▼ ВХОД", "0")}
       {plan && tag(plan.sl, "var(--red)", "SL", "4 3")}
     </svg>
+    </div>
   );
 }
 
