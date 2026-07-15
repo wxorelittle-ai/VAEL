@@ -537,14 +537,15 @@ function CryptoSignalsPanel({ lang }) {
       return { ...p, currentPrice: price, pnl, pnlPct };
     }));
 
-    // auto-close: liquidation first (leverage wipes the margin), then TP/SL
+    // auto-close: liquidation and stop-loss only. Take-profit does NOT auto-close —
+    // profit is left to run; the target stays on the chart as a reference and the
+    // position is closed by the stop, liquidation, or manually.
     const toClose = [];
     positions.forEach(p => {
       const hitLiq = p.liq && (p.side === "buy" ? price <= p.liq : price >= p.liq);
-      const hitTp = p.tp && (p.side === "buy" ? price >= p.tp : price <= p.tp);
       const hitSl = p.sl && (p.side === "buy" ? price <= p.sl : price >= p.sl);
       if (hitLiq) toClose.push({ id: p.id, exitPrice: p.liq, reason: "liq" });
-      else if (hitTp || hitSl) toClose.push({ id: p.id, exitPrice: price, reason: hitTp ? "tp" : "sl" });
+      else if (hitSl) toClose.push({ id: p.id, exitPrice: price, reason: "sl" });
     });
     if (toClose.length > 0) {
       toClose.forEach(({ id, exitPrice, reason }) => closePosition(id, exitPrice, reason));
@@ -1518,7 +1519,7 @@ function DemoTradeForm({ form, setForm, onSubmit, price, maxLev = 100, budget })
         <input type="checkbox" checked={form.useSlTp}
           onChange={e => setForm({ ...form, useSlTp: e.target.checked })}
           style={{ accentColor: "var(--accent)" }} />
-        Авто TP/SL (±2% / ±4%)
+        Авто стоп −2% · цель +4% (цель не закрывает — прибыль бежит)
       </label>
       <button className="btn btn-accent" onClick={onSubmit} style={{ marginTop: "auto" }}>
         ▸ Открыть позицию по ~{price < 10 ? price.toFixed(3) : price < 1000 ? price.toFixed(2) : price.toFixed(0)}
