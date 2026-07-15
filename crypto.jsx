@@ -801,10 +801,12 @@ function CryptoSignalsPanel({ lang }) {
       toClose.forEach(({ id, exitPrice, reason }) => closePosition(id, exitPrice, reason));
     }
 
-    // fill resting limit orders once the market reaches their price. A buy limit
-    // sits below and fills on a dip (price ≤ entry); a sell limit sits above and
-    // fills on a bounce (price ≥ entry).
-    const toFill = pending.filter(o => (o.side === "buy" ? price <= o.entry : price >= o.entry));
+    // fill resting limit orders once the market TOUCHES their price — judged on the
+    // candle's wick, not its close, so a limit fills the moment price traded through
+    // it. A buy limit sits below and fills when the low reaches it (lo ≤ entry); a
+    // sell limit sits above and fills when the high reaches it (hi ≥ entry).
+    const bar = candles[candles.length - 1];
+    const toFill = pending.filter(o => (o.side === "buy" ? bar.lo <= o.entry : bar.hi >= o.entry));
     if (toFill.length > 0) toFill.forEach(o => fillPending(o));
   // eslint-disable-next-line
   }, [candles]);
