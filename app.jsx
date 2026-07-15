@@ -215,6 +215,7 @@ function App() {
       case "opps":      return <OpportunitiesPage lang={t.lang} />;
       case "pairs":     return <PairTradingPage lang={t.lang} />;
       case "daily":     return <DailyAgentPage lang={t.lang} />;
+      case "simulator": return <SimulatorPage lang={t.lang} />;
       case "memory":    return <MemoryPageEnhanced lang={t.lang} />;
       case "analytics": return <AnalyticsPageEnhanced lang={t.lang} />;
       case "analyst":   return <AnalystPage lang={t.lang} />;

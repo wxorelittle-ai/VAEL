@@ -9,6 +9,7 @@ const NAV_ITEMS = [
   { id: "portfolio", ru: "Портфель",    en: "Portfolio",     glyph: "◑" },
   { id: "pairs",     ru: "Парный трейдинг", en: "Pair Trading", glyph: "⇄" },
   { id: "daily",     ru: "Тренд-агент",  en: "Trend Agent",   glyph: "◎" },
+  { id: "simulator", ru: "Симулятор",    en: "Simulator",     glyph: "⟳" },
   { id: "opps",      ru: "Возможности", en: "Opportunities", glyph: "◈" },
   { id: "airdrops",  ru: "Airdrop радар",en: "Airdrop Radar", glyph: "◇" },
   { id: "freedrops", ru: "Free Airdrops",en: "Free Airdrops", glyph: "❋" },
