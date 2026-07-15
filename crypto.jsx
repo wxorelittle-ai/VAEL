@@ -718,7 +718,7 @@ function CryptoSignalsPanel({ lang }) {
    * level, and the smallest safe leverage. See optimalEntry() in signals.jsx. */
   function findEntry() {
     if (!candles.length || typeof optimalEntry !== "function") return;
-    const p = optimalEntry(candles, { budget, riskPct: 0.02, maxLev: asset.maxLev || 100 });
+    const p = optimalEntry(candles, { budget, riskPct: 0.02, maxLev: asset.maxLev || 100, linear: deriv, longShort });
     if (!p) return;
 
     const a = analyzeMarket(candles);
@@ -1729,6 +1729,18 @@ function EntryPlanCard({ plan, sym, onApply, onClear }) {
           ◱ {plan.macro.note}{plan.macro.cap ? ` · плечо ограничено ${plan.macro.cap}x` : ""}
         </div>
       )}
+
+      {plan.micro && plan.micro.flags.map((f, i) => (
+        <div key={i} style={{
+          fontSize: 9.5, fontFamily: "var(--font-mono)", lineHeight: 1.4,
+          color: f.sev === 2 ? "var(--red)" : "var(--amber)",
+          background: "var(--bg-0)", border: `1px solid ${f.sev === 2 ? "var(--red)" : "var(--amber)"}`,
+          borderRadius: 3, padding: "4px 7px",
+        }}>
+          {f.kind === "pump" ? "⚡" : f.kind === "funding" ? "⚖" : "◑"} {f.text}
+          {f.kind === "pump" && plan.micro.chasingPump ? " · вход в ЭТУ сторону = погоня" : ""}
+        </div>
+      ))}
 
       {plan.strategy && (
         <div style={{ fontSize: 10.5, color: "var(--text-mid)", lineHeight: 1.4 }}>

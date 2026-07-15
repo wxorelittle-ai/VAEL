@@ -1031,6 +1031,56 @@ function projectPath(candles, steps = 20, ctx = {}) {
 }
 
 /* ─────────────────────────────────────────────────────────
+ * Microstructure risk — the "manipulation" traceable lines, from data we already
+ * have. Pump-and-dumps have a clear signature (a sharp move on abnormal volume in
+ * minutes) and, per the research, mean-revert ~65% of the time → a "don't chase"
+ * flag. Extreme funding / one-sided crowd = squeeze risk against the crowded side.
+ * ────────────────────────────────────────────────────────*/
+function pumpSignature(candles, K = 5) {
+  const n = candles ? candles.length : 0;
+  if (n < 30) return null;
+  const closes = candles.map(c => c.close), vols = candles.map(c => c.v);
+  const retK = (closes[n - 1] - closes[n - 1 - K]) / closes[n - 1 - K] * 100;
+  // expected K-candle move from recent per-candle volatility
+  const r = [];
+  for (let i = n - 30; i < n; i++) r.push(Math.abs(Math.log(closes[i] / closes[i - 1])));
+  const avgAbs = r.reduce((s, x) => s + x, 0) / r.length;
+  const expectedK = avgAbs * 100 * Math.sqrt(K) || 0.1;
+  const volZ = (typeof taVolAnomaly === "function" ? taVolAnomaly(vols, 20, 5).last : 0);
+  const excess = Math.abs(retK) / expectedK;             // how many σ-moves this is
+  const active = excess > 3.5 && volZ > 3;               // fast, outsized, on abnormal volume
+  const level = (excess > 6 && volZ > 4) ? "extreme" : active ? "elevated" : "normal";
+  return { retK, volZ, excess, active, level, dir: retK >= 0 ? "up" : "down" };
+}
+
+function fundingRisk(linear) {
+  if (!linear || linear.fundingRate == null) return null;
+  const fPct = linear.fundingRate * 100;                 // per 8h
+  const abs = Math.abs(fPct);
+  const level = abs > 0.1 ? "extreme" : abs > 0.05 ? "high" : abs > 0.02 ? "elevated" : "normal";
+  return { fPct, level, crowdedSide: linear.fundingRate >= 0 ? "long" : "short" };
+}
+
+function crowdRisk(longShort) {
+  if (!longShort || longShort.buyRatio == null) return null;
+  const b = longShort.buyRatio;
+  const level = (b > 0.75 || b < 0.25) ? "extreme" : (b > 0.65 || b < 0.35) ? "high" : "balanced";
+  return { buyRatio: b, level, side: b >= 0.5 ? "long" : "short" };
+}
+
+/* Combined per-asset microstructure read + a per-side "safe to enter" verdict. */
+function microstructureRisk(candles, linear, longShort) {
+  const pump = pumpSignature(candles);
+  const funding = fundingRisk(linear);
+  const crowd = crowdRisk(longShort);
+  const flags = [];
+  if (pump && pump.active) flags.push({ kind: "pump", sev: pump.level === "extreme" ? 2 : 1, text: `резкое движение ${pump.retK >= 0 ? "+" : ""}${pump.retK.toFixed(1)}% на объёме ${pump.volZ.toFixed(1)}σ — возможен памп, ~65% таких откатывают` });
+  if (funding && (funding.level === "high" || funding.level === "extreme")) flags.push({ kind: "funding", sev: funding.level === "extreme" ? 2 : 1, text: `funding ${funding.fPct >= 0 ? "+" : ""}${funding.fPct.toFixed(3)}% — толпа перекошена в ${funding.crowdedSide}, риск сквиза` });
+  if (crowd && crowd.level === "extreme") flags.push({ kind: "crowd", sev: 1, text: `${(crowd.buyRatio * 100).toFixed(0)}% в лонге — крайняя однобокость` });
+  return { pump, funding, crowd, flags, level: flags.some(f => f.sev === 2) ? "high" : flags.length ? "elevated" : "normal" };
+}
+
+/* ─────────────────────────────────────────────────────────
  * Optimal entry — the price to enter at, not just "market now".
  *
  * Honest math first: with risk-based sizing (margin = risk$ / (lev · stop%)),
@@ -1137,7 +1187,12 @@ function optimalEntry(candles, opts = {}) {
   // Macro fuse: near a known FOMC/CPI print, cap leverage (and flag blocked entries).
   const macro = typeof macroRisk === "function" ? macroRisk() : null;
   const macroCap = macro && macro.leverageCap ? macro.leverageCap : Infinity;
-  lev = Math.max(1, Math.min(lev, maxSafeLev, exchMaxLev, HARD_LEV_CAP, macroCap));
+  // Microstructure: a pump-in-progress or a squeeze setup caps leverage too.
+  const micro = typeof microstructureRisk === "function" ? microstructureRisk(candles, opts.linear, opts.longShort) : null;
+  const microCap = micro && micro.level === "high" ? 2 : micro && micro.level === "elevated" ? 5 : Infinity;
+  // entering INTO a fresh pump on the same side is chasing — flag it
+  const chasingPump = !!(micro && micro.pump && micro.pump.active && micro.pump.dir === (long ? "up" : "down"));
+  lev = Math.max(1, Math.min(lev, maxSafeLev, exchMaxLev, HARD_LEV_CAP, macroCap, microCap));
 
   const margin = Math.max(10, Math.min(budget * MAX_MARGIN_FRAC, Math.round(riskUsd / (lev * slPct) / 10) * 10));
   const notional = margin * lev;
@@ -1158,13 +1213,14 @@ function optimalEntry(candles, opts = {}) {
     profitAtTp, lossAtSl, mktRR, edgePct,
     conf: a.confidence, setup: !!a.setup, reasons: a.reasons, atr,
     macro: macro && macro.level !== "clear" ? { level: macro.level, note: macro.note, blockEntry: macro.blockEntry, cap: macro.leverageCap } : null,
+    micro: micro && micro.flags.length ? { level: micro.level, flags: micro.flags, chasingPump } : null,
   };
 }
 
 Object.assign(window, {
   analyzeMarket, taEma, taEmaSeries, taRsi, taMacd, taAtr, agentForSignal,
   monteCarloForecast, pairAnalysis, dailyAgentSim, projectPath, newsSentiment,
-  keyLevels, optimalEntry,
+  keyLevels, optimalEntry, pumpSignature, fundingRisk, crowdRisk, microstructureRisk,
   taVolAnomaly, computeMarketMetrics,
   taSmaSeries, taRsiSeries, taStochRsi, taSupertrend, taDmi, taBollinger,
   taCci, taParabolicSar, taAwesome,
