@@ -881,9 +881,9 @@ function CryptoSignalsPanel({ lang }) {
 
   /* A leveraged demo position: margin × leverage = notional size.
    * Liquidation ≈ entry ∓ entry/lev (simplified — no fees / maintenance margin). */
-  function makePosition({ side, price, sl, tp, signalId }) {
-    const margin = form.amount;
-    const lev = Math.max(1, +form.lev || 1);
+  function makePosition({ side, price, sl, tp, signalId, margin: marginArg, lev: levArg }) {
+    const margin = marginArg != null ? marginArg : form.amount;
+    const lev = Math.max(1, +(levArg != null ? levArg : form.lev) || 1);
     const size = margin * lev;
     const liq = lev > 1
       ? (side === "buy" ? price * (1 - 1 / lev) : price * (1 + 1 / lev))
@@ -913,6 +913,31 @@ function CryptoSignalsPanel({ lang }) {
       title: `${asset.sym} · ${form.side === "buy" ? "ЛОНГ" : "ШОРТ"} (вручную)`,
       body: `Маржа ${newPos.margin}$ × ${newPos.lev}x = позиция ${newPos.size}$ по ${price.toFixed(2)}`,
       meta: newPos.liq ? `ликвидация ~${newPos.liq.toFixed(newPos.liq < 10 ? 4 : 2)}` : "без плеча",
+    });
+  }
+
+  /* Open EXACTLY the proposed plan — fill at the planned entry (a limit plan waits
+   * for a pullback, so its entry ≠ current price), with the plan's own stop, target,
+   * leverage and margin. Previously this reused openManual, which filled at the live
+   * price with generic ±2/±4% brackets — so a limit plan opened "where price is now". */
+  function openFromPlan(plan) {
+    if (!plan) return;
+    const entry = plan.entry;   // planned price, NOT candles[last].close
+    const newPos = makePosition({
+      side: plan.side, price: entry,
+      sl: plan.sl, tp: plan.tp, signalId: null,
+      margin: plan.amount, lev: plan.lev,
+    });
+    setPositions(prev => [...prev, newPos]);
+    setTab("open");
+    setEntryPlan(null);
+    const dec = entry < 10 ? 4 : 2;
+    const isLimit = plan.entryType === "limit";
+    window.__emitToast?.({
+      kind: "open",
+      title: `${asset.sym} · ${plan.side === "buy" ? "ЛОНГ" : "ШОРТ"} по плану`,
+      body: `Маржа ${newPos.margin}$ × ${newPos.lev}x = ${newPos.size}$ @ ${entry.toFixed(dec)} · TP ${plan.tp.toFixed(dec)} / SL ${plan.sl.toFixed(dec)}`,
+      meta: `${isLimit ? `лимит · заявка по ${entry.toFixed(dec)} (рынок ${plan.price.toFixed(dec)})` : "по рынку"}${newPos.liq ? ` · ликв. ${newPos.liq.toFixed(newPos.liq < 10 ? 4 : 2)}` : ""}`,
     });
   }
 
@@ -1164,7 +1189,7 @@ function CryptoSignalsPanel({ lang }) {
         {/* Right: signal + trade form */}
         <div style={{ borderLeft: "1px solid var(--line)", display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
           <ActiveSignalCard signal={activeSignal} read={currentRead} onOpen={openFromSignal} flash={pendingFlash === activeSignal?.id} />
-          {entryPlan && <EntryPlanCard plan={entryPlan} sym={asset.sym} onApply={openManual} onClear={() => setEntryPlan(null)} />}
+          {entryPlan && <EntryPlanCard plan={entryPlan} sym={asset.sym} onApply={() => openFromPlan(entryPlan)} onClear={() => setEntryPlan(null)} />}
           <DemoTradeForm form={form} setForm={setForm} onSubmit={openManual} price={priceNow} maxLev={asset.maxLev || 100}
             budget={budget} />
         </div>
