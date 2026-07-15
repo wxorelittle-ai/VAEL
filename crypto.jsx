@@ -1568,7 +1568,7 @@ function EntryPlanCard({ plan, sym, onApply, onClear, onFlip }) {
           <span style={{ color: alt.side === "buy" ? "var(--green)" : "var(--red)", fontWeight: 700 }}>
             ↔ {alt.side === "buy" ? "ЛОНГ" : "ШОРТ"}
           </span>
-          <span>тоже рассмотрен · R:R 1:{alt.rr.toFixed(1)} · conf {alt.conf}%</span>
+          <span>тоже рассмотрен · R:R 1:{alt.rr.toFixed(1)}{alt.evR != null ? ` · ожид. ${alt.evR >= 0 ? "+" : "−"}${Math.abs(alt.evR).toFixed(2)}R` : ""}</span>
           <span style={{ marginLeft: "auto", color: "var(--accent)" }}>переключить</span>
         </button>
       )}
@@ -1642,6 +1642,31 @@ function EntryPlanCard({ plan, sym, onApply, onClear, onFlip }) {
         <PlanBox label="Прибыль в цели" v={`+$${plan.profitAtTp.toFixed(0)}`} c="var(--green)" />
         <PlanBox label="Убыток по стопу" v={`−$${plan.lossAtSl.toFixed(0)}`} c="var(--red)" />
       </div>
+
+      {/* expectancy — the number that decides if the trade is worth taking */}
+      {plan.evR != null && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: 8,
+          fontFamily: "var(--font-mono)", fontSize: 10,
+          background: plan.evR > 0 ? "oklch(0.72 0.14 150 / 0.10)" : "oklch(0.65 0.18 25 / 0.10)",
+          border: `1px solid ${plan.evR > 0 ? "var(--green)" : "var(--red)"}`,
+          borderRadius: 3, padding: "5px 8px",
+        }}>
+          <span style={{ color: "var(--text-dim)" }}>ожидание</span>
+          <span style={{ color: plan.evR > 0 ? "var(--green)" : "var(--red)", fontWeight: 700, fontSize: 11.5 }}>
+            {plan.evR >= 0 ? "+" : "−"}{Math.abs(plan.evR).toFixed(2)}R
+          </span>
+          <span style={{ color: plan.expectedUsd >= 0 ? "var(--green)" : "var(--red)" }}>
+            ({plan.expectedUsd >= 0 ? "+" : "−"}${Math.abs(plan.expectedUsd).toFixed(0)}/сделка)
+          </span>
+          <span style={{ marginLeft: "auto", color: "var(--text-dim)" }}>P(win) {(plan.pWin * 100).toFixed(0)}%</span>
+        </div>
+      )}
+      {plan.evR != null && plan.evR <= 0 && (
+        <div style={{ fontFamily: "var(--font-mono)", fontSize: 9.5, color: "var(--amber)", lineHeight: 1.4 }}>
+          ⚠ отрицательное ожидание — статистически невыгодный вход. Лучше подождать сетап получше{plan.alt && plan.alt.evR > 0 ? " или переключиться на альтернативу выше" : ""}.
+        </div>
+      )}
 
       {/* liquidation is deliberately kept beyond the stop — the stop always fires first */}
       <div style={{

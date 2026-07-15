@@ -1209,15 +1209,25 @@ function optimalEntry(candles, opts = {}) {
       `R:R 1:${rr.toFixed(1)}`,
     ];
     const setup = aligned ? !!a.setup : (cluster.length >= 2 && rr >= 1.6);
-    // which side to propose: conviction + reward:risk + structural confluence + limit edge
-    const pickScore = conf * 0.4 + rr * 12 + cluster.length * 4 + Math.max(0, edgePct) * 0.15;
+    // Profit-optimal ranking = EXPECTANCY, not raw reward:risk. Start from the
+    // random-walk odds of hitting the target before the stop (a further target is
+    // genuinely less likely: p0 = 1/(1+R)), then shift by conviction and structural
+    // confluence. Expected value per trade in R units is what actually grows the
+    // account — the side with the higher EV is the one worth taking.
+    const p0 = 1 / (1 + rr);
+    const pWin = Math.max(0.05, Math.min(0.9,
+      p0 + (conf - 50) / 100 * 0.5 + Math.min(cluster.length, 3) * 0.02));
+    const evR = pWin * rr - (1 - pWin);            // expected reward in R (units of risk)
+    const expectedUsd = evR * lossAtSl;            // ≈ expected $ per trade at this size
+    const pickScore = evR;
 
     return {
       side, entry, entryType, cluster, price, sl, tp, rr, slPct,
       lev, levCapped: lev < levWanted, maxSafeLev,
       margin, notional, liq, riskUsd, budget,
       profitAtTp, lossAtSl, mktRR, edgePct,
-      conf, setup, reasons, atr, chasingPump, pickScore,
+      conf, setup, reasons, atr, chasingPump,
+      pWin, evR, expectedUsd, positiveEdge: evR > 0, pickScore,
     };
   }
 
