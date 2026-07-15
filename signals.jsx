@@ -1113,6 +1113,12 @@ function keyLevels(candles) {
   };
 }
 
+/* Builds the best entry plan by scoring BOTH a long and a short setup from
+ * structure, not just the dominant trend. Each side gets its own entry cluster,
+ * stop, target, leverage and conviction; the higher-scoring side is returned, with
+ * the other attached as `.alt` so the UI can flip to it. This lets the terminal
+ * propose a counter-trend short (e.g. a fade at strong resistance) when it is the
+ * better setup, instead of always following the trend. */
 function optimalEntry(candles, opts = {}) {
   if (!candles || candles.length < 60 || typeof analyzeMarket !== "function") return null;
   const a = analyzeMarket(candles);
@@ -1129,92 +1135,101 @@ function optimalEntry(candles, opts = {}) {
   const L = keyLevels(candles);
   const price = L.price;
   const atr = L.atr || price * 0.004;
-  const long = a.side === "buy";
-
-  /* 1. candidate entry levels near price, on the correct side */
-  const cands = (long
-    ? [L.ema20, L.ema50, L.st, L.bb.mid, L.bb.lower, L.swingLo, L.dc.lower]
-    : [L.ema20, L.ema50, L.st, L.bb.mid, L.bb.upper, L.swingHi, L.dc.upper]
-  ).filter(v => isFinite(v) && v > 0)
-   .filter(v => long ? (v < price && v > price - 2.5 * atr) : (v > price && v < price + 2.5 * atr));
-
-  /* 2. strongest confluence cluster (more levels agreeing + closer to price wins) */
-  let entry = price, entryType = "market", cluster = [];
-  if (cands.length) {
-    const tol = atr * 0.4;
-    let best = null;
-    cands.forEach(v => {
-      const grp = cands.filter(x => Math.abs(x - v) <= tol);
-      const score = grp.length - Math.abs(price - v) / (2.5 * atr);
-      if (!best || score > best.score) best = { grp, score };
-    });
-    if (best) {
-      entry = best.grp.reduce((s, x) => s + x, 0) / best.grp.length;
-      cluster = best.grp;
-      entryType = "limit";
-    }
-  }
-  // price already through the level → nothing to wait for
-  if ((long && price <= entry) || (!long && price >= entry)) { entry = price; entryType = "market"; cluster = []; }
-
-  /* 3. stop beyond the structure that justifies the entry */
-  // widen the stop when a macro event is near (initial spike overshoots levels)
-  const macroWiden = (typeof macroRisk === "function" && macroRisk().widenStop) || 1;
-  const slAtr = 0.8 * macroWiden;
-  const sl = long
-    ? Math.min(entry - atr * slAtr, L.swingLo - atr * 0.2)
-    : Math.max(entry + atr * slAtr, L.swingHi + atr * 0.2);
-  const slDist = Math.abs(entry - sl);
-  const slPct = slDist / entry;
-
-  /* 4. target: nearest structural level paying ≥1.5R, else a 1.8R projection */
-  const res = (long ? [L.bb.upper, L.dc.upper, L.swingHi] : [L.bb.lower, L.dc.lower, L.swingLo])
-    .filter(v => isFinite(v) && v > 0)
-    .filter(v => long ? v > entry + slDist * 1.5 : v < entry - slDist * 1.5)
-    .sort((x, y) => (long ? x - y : y - x));
-  const tp = res.length ? res[0] : (long ? entry + slDist * 1.8 : entry - slDist * 1.8);
-  const rr = slDist > 0 ? Math.abs(tp - entry) / slDist : 0;
-
-  /* 5. leverage: smallest that keeps margin near the target fraction, then clamped
-   *    so that liquidation can never sit inside the stop */
   const riskUsd = budget * riskPct;
-  const maxSafeLev = Math.max(1, Math.floor(1 / (slPct * LIQ_BUFFER)));
-  const marginAt1x = riskUsd / slPct;
-  let lev = marginAt1x > budget * TGT_MARGIN_FRAC
-    ? Math.ceil(marginAt1x / (budget * TGT_MARGIN_FRAC))
-    : 1;
-  const levWanted = lev;
-  // Macro fuse: near a known FOMC/CPI print, cap leverage (and flag blocked entries).
+
   const macro = typeof macroRisk === "function" ? macroRisk() : null;
   const macroCap = macro && macro.leverageCap ? macro.leverageCap : Infinity;
-  // Microstructure: a pump-in-progress or a squeeze setup caps leverage too.
+  const macroWiden = (macro && macro.widenStop) || 1;
   const micro = typeof microstructureRisk === "function" ? microstructureRisk(candles, opts.linear, opts.longShort) : null;
   const microCap = micro && micro.level === "high" ? 2 : micro && micro.level === "elevated" ? 5 : Infinity;
-  // entering INTO a fresh pump on the same side is chasing — flag it
-  const chasingPump = !!(micro && micro.pump && micro.pump.active && micro.pump.dir === (long ? "up" : "down"));
-  lev = Math.max(1, Math.min(lev, maxSafeLev, exchMaxLev, HARD_LEV_CAP, macroCap, microCap));
 
-  const margin = Math.max(10, Math.min(budget * MAX_MARGIN_FRAC, Math.round(riskUsd / (lev * slPct) / 10) * 10));
-  const notional = margin * lev;
-  const liq = lev > 1 ? (long ? entry * (1 - 1 / lev) : entry * (1 + 1 / lev)) : null;
+  // A full plan for ONE side, derived from structure. Run for both buy and sell.
+  function planForSide(side) {
+    const long = side === "buy";
+    /* 1. candidate entry levels near price, on the correct side */
+    const cands = (long
+      ? [L.ema20, L.ema50, L.st, L.bb.mid, L.bb.lower, L.swingLo, L.dc.lower]
+      : [L.ema20, L.ema50, L.st, L.bb.mid, L.bb.upper, L.swingHi, L.dc.upper]
+    ).filter(v => isFinite(v) && v > 0)
+     .filter(v => long ? (v < price && v > price - 2.5 * atr) : (v > price && v < price + 2.5 * atr));
 
-  const profitAtTp = notional * Math.abs(tp - entry) / entry;
-  const lossAtSl = notional * slPct;
+    /* 2. strongest confluence cluster (more levels agreeing + closer to price wins) */
+    let entry = price, entryType = "market", cluster = [];
+    if (cands.length) {
+      const tol = atr * 0.4;
+      let bestC = null;
+      cands.forEach(v => {
+        const grp = cands.filter(x => Math.abs(x - v) <= tol);
+        const sc = grp.length - Math.abs(price - v) / (2.5 * atr);
+        if (!bestC || sc > bestC.sc) bestC = { grp, sc };
+      });
+      if (bestC) { entry = bestC.grp.reduce((s, x) => s + x, 0) / bestC.grp.length; cluster = bestC.grp; entryType = "limit"; }
+    }
+    if ((long && price <= entry) || (!long && price >= entry)) { entry = price; entryType = "market"; cluster = []; }
 
-  /* how much better than just buying at market right now */
-  const mktSlDist = Math.abs(price - sl);
-  const mktRR = mktSlDist > 0 ? Math.abs(tp - price) / mktSlDist : 0;
-  const edgePct = mktRR > 0 ? (rr / mktRR - 1) * 100 : 0;
+    /* 3. stop beyond the structure that justifies the entry */
+    const slAtr = 0.8 * macroWiden;
+    const sl = long ? Math.min(entry - atr * slAtr, L.swingLo - atr * 0.2) : Math.max(entry + atr * slAtr, L.swingHi + atr * 0.2);
+    const slDist = Math.abs(entry - sl);
+    const slPct = slDist / entry;
 
-  return {
-    side: a.side, entry, entryType, cluster, price,
-    sl, tp, rr, slPct, lev, levCapped: lev < levWanted, maxSafeLev,
-    margin, notional, liq, riskUsd, budget,
-    profitAtTp, lossAtSl, mktRR, edgePct,
-    conf: a.confidence, setup: !!a.setup, reasons: a.reasons, atr,
-    macro: macro && macro.level !== "clear" ? { level: macro.level, note: macro.note, blockEntry: macro.blockEntry, cap: macro.leverageCap } : null,
-    micro: micro && micro.flags.length ? { level: micro.level, flags: micro.flags, chasingPump } : null,
-  };
+    /* 4. target: nearest structural level paying ≥1.5R, else a 1.8R projection */
+    const res = (long ? [L.bb.upper, L.dc.upper, L.swingHi] : [L.bb.lower, L.dc.lower, L.swingLo])
+      .filter(v => isFinite(v) && v > 0)
+      .filter(v => long ? v > entry + slDist * 1.5 : v < entry - slDist * 1.5)
+      .sort((x, y) => (long ? x - y : y - x));
+    const tp = res.length ? res[0] : (long ? entry + slDist * 1.8 : entry - slDist * 1.8);
+    const rr = slDist > 0 ? Math.abs(tp - entry) / slDist : 0;
+
+    /* 5. leverage: smallest that keeps margin near target, clamped so liquidation
+     *    can never sit inside the stop */
+    const maxSafeLev = Math.max(1, Math.floor(1 / (slPct * LIQ_BUFFER)));
+    const marginAt1x = riskUsd / slPct;
+    let lev = marginAt1x > budget * TGT_MARGIN_FRAC ? Math.ceil(marginAt1x / (budget * TGT_MARGIN_FRAC)) : 1;
+    const levWanted = lev;
+    const chasingPump = !!(micro && micro.pump && micro.pump.active && micro.pump.dir === (long ? "up" : "down"));
+    lev = Math.max(1, Math.min(lev, maxSafeLev, exchMaxLev, HARD_LEV_CAP, macroCap, microCap));
+
+    const margin = Math.max(10, Math.min(budget * MAX_MARGIN_FRAC, Math.round(riskUsd / (lev * slPct) / 10) * 10));
+    const notional = margin * lev;
+    const liq = lev > 1 ? (long ? entry * (1 - 1 / lev) : entry * (1 + 1 / lev)) : null;
+    const profitAtTp = notional * Math.abs(tp - entry) / entry;
+    const lossAtSl = notional * slPct;
+    const mktSlDist = Math.abs(price - sl);
+    const mktRR = mktSlDist > 0 ? Math.abs(tp - price) / mktSlDist : 0;
+    const edgePct = mktRR > 0 ? (rr / mktRR - 1) * 100 : 0;
+
+    // conviction: the TA-aligned side keeps analyzeMarket's read; the counter side
+    // gets a mirrored (lower) confidence + a structural rationale.
+    const aligned = side === a.side;
+    const conf = aligned ? a.confidence : Math.max(10, Math.min(55, 110 - a.confidence));
+    const reasons = aligned ? a.reasons : [
+      "контр-тренд к основному сигналу — сетап от структуры",
+      entryType === "limit" ? `вход у кластера уровней (${cluster.length})` : "вход по рынку у уровня",
+      `R:R 1:${rr.toFixed(1)}`,
+    ];
+    const setup = aligned ? !!a.setup : (cluster.length >= 2 && rr >= 1.6);
+    // which side to propose: conviction + reward:risk + structural confluence + limit edge
+    const pickScore = conf * 0.4 + rr * 12 + cluster.length * 4 + Math.max(0, edgePct) * 0.15;
+
+    return {
+      side, entry, entryType, cluster, price, sl, tp, rr, slPct,
+      lev, levCapped: lev < levWanted, maxSafeLev,
+      margin, notional, liq, riskUsd, budget,
+      profitAtTp, lossAtSl, mktRR, edgePct,
+      conf, setup, reasons, atr, chasingPump, pickScore,
+    };
+  }
+
+  const A = planForSide("buy"), B = planForSide("sell");
+  const [best, other] = A.pickScore >= B.pickScore ? [A, B] : [B, A];
+
+  const macroOut = macro && macro.level !== "clear" ? { level: macro.level, note: macro.note, blockEntry: macro.blockEntry, cap: macro.leverageCap } : null;
+  const microOut = plan => micro && micro.flags.length ? { level: micro.level, flags: micro.flags, chasingPump: plan.chasingPump } : null;
+  best.macro = macroOut; best.micro = microOut(best);
+  other.macro = macroOut; other.micro = microOut(other);
+  best.alt = other;   // other has no `.alt` → no reference cycle
+  return best;
 }
 
 Object.assign(window, {

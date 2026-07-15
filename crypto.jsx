@@ -478,6 +478,18 @@ function CryptoSignalsPanel({ lang }) {
     });
   }
 
+  // flip the shown plan to the other direction (long ↔ short) that optimalEntry
+  // also scored; rebuilds `.alt` so you can flip back.
+  function flipPlan() {
+    setEntryPlan(prev => {
+      if (!prev || !prev.alt) return prev;
+      const next = prev.alt;
+      const back = { ...prev }; delete back.alt;
+      setForm(f => ({ ...f, side: next.side, amount: next.margin, lev: next.lev }));
+      return { ...next, alt: back, amount: next.margin, strategy: prev.strategy };
+    });
+  }
+
   // Seed the signal set once real candles for THIS chart (symbol + timeframe)
   // have loaded. Keyed on both — a timeframe switch must re-seed, not reuse.
   useEffect(() => {
@@ -992,12 +1004,18 @@ function CryptoSignalsPanel({ lang }) {
           </div>
         </div>
 
-        {/* Right: signal + trade form */}
+        {/* Right: signal + trade form. The signal/plan area scrolls; the trade form
+            (with the "Открыть позицию" button) stays pinned so a tall entry plan can
+            never push the button off-screen. */}
         <div style={{ borderLeft: "1px solid var(--line)", display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
-          <ActiveSignalCard signal={activeSignal} read={currentRead} onOpen={openFromSignal} flash={pendingFlash === activeSignal?.id} />
-          {entryPlan && <EntryPlanCard plan={entryPlan} sym={asset.sym} onApply={() => openFromPlan(entryPlan)} onClear={() => setEntryPlan(null)} />}
-          <DemoTradeForm form={form} setForm={setForm} onSubmit={openManual} price={priceNow} maxLev={asset.maxLev || 100}
-            budget={budget} />
+          <div className="scroll" style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column" }}>
+            <ActiveSignalCard signal={activeSignal} read={currentRead} onOpen={openFromSignal} flash={pendingFlash === activeSignal?.id} />
+            {entryPlan && <EntryPlanCard plan={entryPlan} sym={asset.sym} onApply={() => openFromPlan(entryPlan)} onClear={() => setEntryPlan(null)} onFlip={entryPlan.alt ? flipPlan : null} />}
+          </div>
+          <div style={{ flexShrink: 0, borderTop: "1px solid var(--line)" }}>
+            <DemoTradeForm form={form} setForm={setForm} onSubmit={openManual} price={priceNow} maxLev={asset.maxLev || 100}
+              budget={budget} />
+          </div>
         </div>
       </div>
 
@@ -1524,9 +1542,10 @@ function tradeFee(notional) { return notional * FEE_RATE; }
 
 /* The plan produced by "найти точку входа": which strategy fits, where to enter,
  * how much of YOUR budget to risk, and what leverage the setup justifies. */
-function EntryPlanCard({ plan, sym, onApply, onClear }) {
+function EntryPlanCard({ plan, sym, onApply, onClear, onFlip }) {
   const c = plan.side === "buy" ? "var(--green)" : "var(--red)";
   const dec = plan.entry < 10 ? 4 : 2;
+  const alt = plan.alt;
   return (
     <div style={{ padding: "10px 14px", borderBottom: "1px solid var(--line)", borderLeft: `3px solid ${c}`, background: "var(--bg-2)", display: "flex", flexDirection: "column", gap: 6 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -1536,6 +1555,23 @@ function EntryPlanCard({ plan, sym, onApply, onClear }) {
         <span className="mono" style={{ fontSize: 9.5, color: "var(--accent)" }}>conf {plan.conf}%</span>
         <button onClick={onClear} title="убрать план" style={{ marginLeft: "auto", background: "transparent", border: "none", color: "var(--text-dim)", cursor: "pointer", fontSize: 12 }}>✕</button>
       </div>
+
+      {/* both directions scored — flip to the alternative (long ↔ short) */}
+      {onFlip && alt && (
+        <button onClick={onFlip} title="показать план в другую сторону"
+          style={{
+            display: "flex", alignItems: "center", gap: 6, width: "100%",
+            fontFamily: "var(--font-mono)", fontSize: 9.5, cursor: "pointer",
+            background: "var(--bg-0)", border: "1px dashed var(--line-bright)", borderRadius: 3, padding: "3px 7px",
+            color: "var(--text-mid)",
+          }}>
+          <span style={{ color: alt.side === "buy" ? "var(--green)" : "var(--red)", fontWeight: 700 }}>
+            ↔ {alt.side === "buy" ? "ЛОНГ" : "ШОРТ"}
+          </span>
+          <span>тоже рассмотрен · R:R 1:{alt.rr.toFixed(1)} · conf {alt.conf}%</span>
+          <span style={{ marginLeft: "auto", color: "var(--accent)" }}>переключить</span>
+        </button>
+      )}
 
       {/* market vs limit: the optimiser may want a better price than "right now" */}
       <div style={{
