@@ -898,9 +898,11 @@ function CryptoSignalsPanel({ lang }) {
     const liq = lev > 1
       ? (side === "buy" ? price * (1 - 1 / lev) : price * (1 + 1 / lev))
       : null;
+    const entryFee = tradeFee(size);   // commission paid opening the position
     return {
       id: `P-${Date.now()}`, side, entry: price,
       margin, lev, size, liq, sl, tp, signalId,
+      feeRate: FEE_RATE, entryFee,
       sym: asset.sym, bybit: asset.bybit,
       openedAt: nowTsHM(), openedTs: Date.now(),   // real timestamp — portfolio needs it
       pnl: 0, pnlPct: 0, currentPrice: price,
@@ -1006,15 +1008,21 @@ function CryptoSignalsPanel({ lang }) {
     const closing = positions.find(p => p.id === id);
     if (!closing) return;
     const exitPrice = exitPriceOverride ?? candles[candles.length - 1].close;
-    const pnl = closing.side === "buy"
+    const grossPnl = closing.side === "buy"
       ? (exitPrice - closing.entry) * (closing.size / closing.entry)
       : (closing.entry - exitPrice) * (closing.size / closing.entry);
+    // commission: entry fee (paid when opened) + exit fee on the notional at exit
+    const feeRate = closing.feeRate != null ? closing.feeRate : FEE_RATE;
+    const entryFee = closing.entryFee != null ? closing.entryFee : closing.size * feeRate;
+    const exitFee = (closing.size * (exitPrice / closing.entry)) * feeRate;
+    const fee = entryFee + exitFee;
+    const pnl = grossPnl - fee;                          // realized P&L is net of commission
     const margin = closing.margin != null ? closing.margin : closing.size;
-    const pnlPct = margin ? (pnl / margin) * 100 : 0;   // ROE on the margin
+    const pnlPct = margin ? (pnl / margin) * 100 : 0;   // ROE on the margin, net of fees
     // pure state updates (functional — safe when several positions close in one tick)
     setPositions(prev => prev.filter(p => p.id !== id));
     setHistory(prev => [{
-      ...closing, exitPrice, pnl, pnlPct, reason,
+      ...closing, exitPrice, pnl, grossPnl, fee, pnlPct, reason,
       sym: closing.sym || asset.sym, bybit: closing.bybit || asset.bybit,
       closedAt: nowTsHM(), closedTs: Date.now(),   // real timestamp — portfolio stats need it
     }, ...prev].slice(0, 200));
@@ -1026,7 +1034,7 @@ function CryptoSignalsPanel({ lang }) {
       kind: reason === "tp" ? "win" : (reason === "sl" || reason === "liq") ? "loss" : "close",
       title: `${asset.sym} · позиция закрыта · ${reasonLabel}`,
       body: `${closing.side === "buy" ? "ЛОНГ" : "ШОРТ"} ${closing.size}$${closing.lev > 1 ? ` (${closing.lev}x)` : ""} · вход ${closing.entry.toFixed(dec)} → выход ${exitPrice.toFixed(dec)}`,
-      meta: `P&L: ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}$ · ROE ${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(1)}%`,
+      meta: `P&L: ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}$ (чистыми) · комиссия −${fee.toFixed(2)}$ · ROE ${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(1)}%`,
     });
   }
 
@@ -1741,6 +1749,10 @@ function DemoTradeForm({ form, setForm, onSubmit, price, maxLev = 100, budget })
         <span>позиция <span style={{ color: "var(--text-bright)" }}>{notional.toLocaleString("en-US")}$</span></span>
         {liq && <span>ликв. <span style={{ color: "var(--red)" }}>{liq.toFixed(dec)}</span></span>}
       </div>
+      <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--text-dim)" }}>
+        <span>комиссия ({(FEE_RATE * 100).toFixed(3)}% × 2)</span>
+        <span style={{ color: "var(--amber)" }}>≈ −{tradeFee(notional * 2).toFixed(2)}$</span>
+      </div>
       {/* auto SL sits at 2% — warn when leverage puts liquidation closer than that */}
       {form.useSlTp && lev > 33 && (
         <div style={{ fontFamily: "var(--font-mono)", fontSize: 9.5, color: "var(--red)", lineHeight: 1.4 }}>
@@ -1767,6 +1779,11 @@ function DemoTradeForm({ form, setForm, onSubmit, price, maxLev = 100, budget })
 /* Your trading capital — all position sizing is derived from it. */
 const BUDGET_LS = "vael.budget";
 function loadBudget() { try { return +localStorage.getItem(BUDGET_LS) || 10000; } catch (_) { return 10000; } }
+
+/* Trading commission — charged on the notional (size) each side, Bybit-like taker
+ * rate. A trade pays it twice: once on entry, once on exit. Realized P&L is net. */
+const FEE_RATE = 0.00055; // 0.055% per side
+function tradeFee(notional) { return notional * FEE_RATE; }
 
 /* The plan produced by "найти точку входа": which strategy fits, where to enter,
  * how much of YOUR budget to risk, and what leverage the setup justifies. */
@@ -1920,8 +1937,8 @@ function OpenPositionsTable({ positions, onClose }) {
   }
   return (
     <div>
-      <THead cols={["Тип", "Маржа", "Плечо", "Позиция", "Вход", "Цена", "Ликв.", "P&L $", "ROE %", ""]}
-        grid="66px 62px 50px 70px 74px 74px 74px 70px 66px 66px" />
+      <THead cols={["Тип", "Маржа", "Плечо", "Позиция", "Вход", "Цена", "Ликв.", "Комис.", "P&L $", "ROE %", ""]}
+        grid="66px 62px 50px 70px 74px 74px 74px 58px 70px 66px 66px" />
       {positions.map(p => {
         const isBuy = p.side === "buy";
         const color = isBuy ? "var(--green)" : "var(--red)";
@@ -1929,9 +1946,10 @@ function OpenPositionsTable({ positions, onClose }) {
         const lev = p.lev || 1;
         const margin = p.margin != null ? p.margin : p.size;
         const dec = p.entry < 10 ? 4 : 2;
+        const entryFee = p.entryFee != null ? p.entryFee : p.size * FEE_RATE;
         return (
           <div key={p.id} style={{
-            display: "grid", gridTemplateColumns: "66px 62px 50px 70px 74px 74px 74px 70px 66px 66px",
+            display: "grid", gridTemplateColumns: "66px 62px 50px 70px 74px 74px 74px 58px 70px 66px 66px",
             alignItems: "center", padding: "5px 12px",
             borderBottom: "1px solid var(--line)",
             fontFamily: "var(--font-mono)", fontSize: 10.5,
@@ -1944,6 +1962,7 @@ function OpenPositionsTable({ positions, onClose }) {
             <span style={{ color: "var(--text-mid)" }}>{p.entry.toFixed(dec)}</span>
             <span style={{ color: "var(--text-bright)" }}>{p.currentPrice.toFixed(dec)}</span>
             <span style={{ color: p.liq ? "var(--red)" : "var(--text-dim)" }}>{p.liq ? p.liq.toFixed(dec) : "—"}</span>
+            <span style={{ color: "var(--amber)" }} title="комиссия за вход (уплачена)">−{entryFee.toFixed(2)}</span>
             <span style={{ color: pnlColor }}>{p.pnl >= 0 ? "+" : ""}{p.pnl.toFixed(2)}</span>
             <span style={{ color: pnlColor, fontWeight: 600 }}>{p.pnlPct >= 0 ? "+" : ""}{p.pnlPct.toFixed(1)}%</span>
             <button onClick={() => onClose(p.id)} style={{
@@ -2009,15 +2028,16 @@ function HistoryTable({ history }) {
   }
   return (
     <div>
-      <THead cols={["#", "Тип", "Вход → Выход", "Объём", "P&L $", "P&L %", "Причина", "Время"]} grid="60px 60px 1fr 70px 70px 70px 80px 70px" />
+      <THead cols={["#", "Тип", "Вход → Выход", "Объём", "Комис.", "P&L $", "P&L %", "Причина", "Время"]} grid="56px 56px 1fr 64px 62px 66px 58px 74px 60px" />
       {history.map(h => {
         const isBuy = h.side === "buy";
         const color = isBuy ? "var(--green)" : "var(--red)";
         const pnlColor = h.pnl >= 0 ? "var(--green)" : "var(--red)";
         const reasonLabel = { tp: "TP", sl: "SL", manual: "вручную" }[h.reason] || h.reason;
+        const fee = h.fee != null ? h.fee : 0;
         return (
           <div key={h.id} style={{
-            display: "grid", gridTemplateColumns: "60px 60px 1fr 70px 70px 70px 80px 70px",
+            display: "grid", gridTemplateColumns: "56px 56px 1fr 64px 62px 66px 58px 74px 60px",
             alignItems: "center", padding: "5px 12px",
             borderBottom: "1px solid var(--line)",
             fontFamily: "var(--font-mono)", fontSize: 10.5,
@@ -2026,7 +2046,8 @@ function HistoryTable({ history }) {
             <span style={{ color, fontWeight: 600 }}>{isBuy ? "ЛОНГ" : "ШОРТ"}</span>
             <span style={{ color: "var(--text)" }}>{h.entry.toFixed(2)} → {h.exitPrice.toFixed(2)}</span>
             <span style={{ color: "var(--text-mid)" }}>{h.size}$</span>
-            <span style={{ color: pnlColor }}>{h.pnl >= 0 ? "+" : ""}{h.pnl.toFixed(2)}</span>
+            <span style={{ color: "var(--amber)" }} title="комиссия за сделку (вход + выход)">−{fee.toFixed(2)}</span>
+            <span style={{ color: pnlColor }} title="P&L за вычетом комиссии">{h.pnl >= 0 ? "+" : ""}{h.pnl.toFixed(2)}</span>
             <span style={{ color: pnlColor, fontWeight: 600 }}>{h.pnlPct >= 0 ? "+" : ""}{h.pnlPct.toFixed(2)}%</span>
             <span style={{ color: reasonLabel === "TP" ? "var(--green)" : reasonLabel === "SL" ? "var(--red)" : "var(--text-mid)" }}>{reasonLabel}</span>
             <span style={{ color: "var(--text-dim)" }}>{h.closedAt}</span>
