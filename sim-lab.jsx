@@ -141,6 +141,76 @@ function genesLabel(g) {
   return `${g.side === "buy" ? "L" : "S"}·${t}·${g.trendFilter[0]}·${g.tpR}R`;
 }
 
+/* Plain-language rulebook for a strategy — what it actually does, step by step. */
+function genesRules(g) {
+  const long = g.side === "buy";
+  const trigTxt = {
+    rsiOversold: `RSI опускается ниже ${g.rsiTh || 45} (перепроданность)`,
+    rsiOverbought: `RSI поднимается выше ${100 - (g.rsiTh || 45)} (перекупленность)`,
+    stFlipUp: "Supertrend разворачивается вверх",
+    stFlipDown: "Supertrend разворачивается вниз",
+    macdUp: "гистограмма MACD пересекает ноль снизу вверх",
+    macdDown: "гистограмма MACD пересекает ноль сверху вниз",
+    bbLower: "цена прокалывает нижнюю полосу Боллинджера (%B < 0.05)",
+    bbUpper: "цена прокалывает верхнюю полосу Боллинджера (%B > 0.95)",
+    stochCrossUp: `бычье пересечение Stochastic ниже ${g.stochTh || 25}`,
+    donchBreakUp: "цена пробивает верхнюю границу канала Дончиана (20)",
+    donchBreakDown: "цена пробивает нижнюю границу канала Дончиана (20)",
+  }[g.trigger] || g.trigger;
+  const trendTxt = g.trendFilter === "up" ? "только в восходящем тренде (цена > EMA50, EMA9 > EMA21)"
+    : g.trendFilter === "down" ? "только в нисходящем тренде (цена < EMA50, EMA9 < EMA21)"
+    : "в любом тренде";
+  const slAtr = g.slAtr || 1.5, tpR = g.tpR || 1.8;
+  const rules = [
+    { k: "Направление", v: long ? "Лонг · в покупку" : "Шорт · в продажу" },
+    { k: "Фильтр тренда", v: trendTxt },
+  ];
+  if (g.adxMin) rules.push({ k: "Сила тренда", v: `входить только если ADX ≥ ${g.adxMin}` });
+  rules.push({ k: "Триггер входа", v: trigTxt });
+  rules.push({ k: "Стоп-лосс", v: `${slAtr}×ATR от входа` });
+  rules.push({ k: "Тейк-профит", v: `${tpR}R · ${(slAtr * tpR).toFixed(1)}×ATR от входа` });
+  rules.push({ k: "Тайм-аут", v: "выход через 24 бара, если ни стоп, ни цель не сработали" });
+  return rules;
+}
+
+/* Capital-aware execution plan for a strategy at the LATEST candle — the same
+ * optimal-leverage / liquidation logic the entry planner uses: pick the smallest
+ * leverage that keeps margin near target, clamped so liquidation stays beyond the
+ * stop. Numbers are honest given the strategy's own ATR stop. */
+function genesPlan(candles, f, g, cfg) {
+  const n = candles.length; if (n < 2) return null;
+  const i = n - 1;
+  const long = g.side === "buy";
+  const price = f.closes[i];
+  const atr = f.atr[i] || price * 0.004;
+  const slAtr = g.slAtr || 1.5, tpR = g.tpR || 1.8;
+  const slDist = atr * slAtr;
+  const slPct = slDist / price;
+  const sl = long ? price - slDist : price + slDist;
+  const tp = long ? price + slDist * tpR : price - slDist * tpR;
+
+  const budget = cfg.capital || 10000;
+  const riskPct = 0.02, LIQ_BUFFER = 1.5, HARD_LEV_CAP = 20, TGT_MARGIN_FRAC = 0.25, MAX_MARGIN_FRAC = 0.5;
+  const exchMaxLev = cfg.maxLev || 50;
+  const riskUsd = budget * riskPct;
+  const maxSafeLev = Math.max(1, Math.floor(1 / (slPct * LIQ_BUFFER)));   // liq stays beyond the stop
+  const marginAt1x = riskUsd / slPct;
+  const levWanted = marginAt1x > budget * TGT_MARGIN_FRAC ? Math.ceil(marginAt1x / (budget * TGT_MARGIN_FRAC)) : 1;
+  const lev = Math.max(1, Math.min(levWanted, maxSafeLev, exchMaxLev, HARD_LEV_CAP));
+  const margin = Math.max(10, Math.min(budget * MAX_MARGIN_FRAC, riskUsd / (lev * slPct)));
+  const notional = margin * lev;
+  const qty = notional / price;
+  const liq = lev > 1 ? (long ? price * (1 - 1 / lev) : price * (1 + 1 / lev)) : null;
+  const liqDistPct = liq ? Math.abs(liq - price) / price * 100 : null;
+  const profitAtTp = notional * Math.abs(tp - price) / price;
+  const lossAtSl = notional * slPct;
+  return {
+    side: g.side, price, entry: price, sl, tp, rr: tpR, slPct, atr,
+    lev, levWanted, levCapped: lev < levWanted, maxSafeLev,
+    margin, notional, qty, liq, liqDistPct, riskUsd, budget, profitAtTp, lossAtSl,
+  };
+}
+
 /* Full lab run: library + a fresh generation + (optionally) evolved winners. */
 function runSimLab(candles, cfg, seedGenes) {
   const f = computeFeatures(candles);
@@ -187,5 +257,5 @@ function cumRoi(c) { return (c.history || []).reduce((s, p) => s + p.roi, 0); }
 
 Object.assign(window, {
   computeFeatures, backtestGenes, strategyLibrary, generateGenes, mutateGenes, genesLabel,
-  runSimLab, loadChampions, saveChampions, recordChampions, cumRoi,
+  genesRules, genesPlan, runSimLab, loadChampions, saveChampions, recordChampions, cumRoi,
 });

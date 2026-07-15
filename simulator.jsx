@@ -30,7 +30,9 @@ function SimulatorPage({ lang }) {
   const [champs, setChamps] = useState(() => (typeof loadChampions === "function" ? loadChampions() : []));
   const [gen, setGen] = useState(0);
   const [ts, setTs] = useState(null);
+  const [expanded, setExpanded] = useState(null);
   const seedRef = useRef([]);
+  const featRef = useRef(null);
 
   const coin = SIM_COINS[coinIdx];
   const period = SIM_PERIODS.find(p => p.id === periodId);
@@ -43,6 +45,8 @@ function SimulatorPage({ lang }) {
       const seeds = evolve ? seedRef.current : [];
       const cfg = { capital, leverage: lev, fees: 0.02, genCount: 8, genSeed: (evolve ? gen * 8 : 0) };
       const r = runSimLab(candles, cfg, seeds);
+      featRef.current = { candles, f: (typeof computeFeatures === "function" ? computeFeatures(candles) : null) };
+      setExpanded(null);
       setRows(r);
       seedRef.current = r.slice(0, 4).filter(x => x.genes).map(x => x.genes);   // winners → next evolution
       setGen(g => evolve ? g + 1 : 1);
@@ -111,23 +115,28 @@ function SimulatorPage({ lang }) {
             {/* Leaderboard */}
             <div className="panel" style={{ padding: 0, overflow: "hidden" }}>
               <PanelHeader title="РЕЙТИНГ ПРОГОНА" meta={ts ? ts.toLocaleTimeString("ru-RU", { hour12: false }) : ""} />
-              <div style={{ display: "grid", gridTemplateColumns: "24px 1.5fr 78px 60px 56px 56px 60px", padding: "6px 12px", background: "var(--bg-2)", fontFamily: "var(--font-mono)", fontSize: 8.5, color: "var(--text-dim)", letterSpacing: 0.05, textTransform: "uppercase" }}>
-                <span>#</span><span>Стратегия</span><span style={{ textAlign: "right" }}>Прибыль</span><span style={{ textAlign: "right" }}>ROI</span><span style={{ textAlign: "right" }}>Win</span><span style={{ textAlign: "right" }}>Сд.</span><span style={{ textAlign: "right" }}>PF</span>
+              <div style={{ display: "grid", gridTemplateColumns: "24px 1.5fr 78px 60px 56px 56px 60px 18px", padding: "6px 12px", background: "var(--bg-2)", fontFamily: "var(--font-mono)", fontSize: 8.5, color: "var(--text-dim)", letterSpacing: 0.05, textTransform: "uppercase" }}>
+                <span>#</span><span>Стратегия</span><span style={{ textAlign: "right" }}>Прибыль</span><span style={{ textAlign: "right" }}>ROI</span><span style={{ textAlign: "right" }}>Win</span><span style={{ textAlign: "right" }}>Сд.</span><span style={{ textAlign: "right" }}>PF</span><span />
               </div>
-              <div className="scroll" style={{ maxHeight: 360, overflowY: "auto" }}>
+              <div className="scroll" style={{ maxHeight: 420, overflowY: "auto" }}>
                 {rows.map((r, i) => (
-                  <div key={i} style={{ display: "grid", gridTemplateColumns: "24px 1.5fr 78px 60px 56px 56px 60px", padding: "6px 12px", borderBottom: "1px solid var(--line)", fontFamily: "var(--font-mono)", fontSize: 10.5, alignItems: "center", background: i === 0 ? "var(--accent-soft)" : "transparent" }}>
-                    <span style={{ color: i === 0 ? "var(--accent)" : "var(--text-dim)" }}>{i === 0 ? "★" : i + 1}</span>
-                    <span style={{ minWidth: 0, display: "flex", alignItems: "center", gap: 5 }}>
-                      <span style={{ width: 6, height: 6, borderRadius: 2, background: SRC_CFG[r.source].color, flexShrink: 0 }} />
-                      <span style={{ color: "var(--text-bright)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name}</span>
-                    </span>
-                    <span style={{ textAlign: "right", color: r.profit >= 0 ? "var(--green)" : "var(--red)", fontWeight: 600 }}>{r.profit >= 0 ? "+" : "−"}${Math.abs(r.profit).toFixed(0)}</span>
-                    <span style={{ textAlign: "right", color: r.totalReturn >= 0 ? "var(--green)" : "var(--red)" }}>{r.totalReturn >= 0 ? "+" : ""}{r.totalReturn.toFixed(1)}%</span>
-                    <span style={{ textAlign: "right", color: r.winRate >= 50 ? "var(--green)" : "var(--amber)" }}>{r.winRate.toFixed(0)}%</span>
-                    <span style={{ textAlign: "right", color: "var(--text-dim)" }}>{r.trades}</span>
-                    <span style={{ textAlign: "right", color: r.profitFactor >= 1 ? "var(--green)" : "var(--red)" }}>{r.profitFactor.toFixed(2)}</span>
-                  </div>
+                  <React.Fragment key={i}>
+                    <div onClick={() => setExpanded(expanded === i ? null : i)} title="Показать правила и план входа"
+                      style={{ display: "grid", gridTemplateColumns: "24px 1.5fr 78px 60px 56px 56px 60px 18px", padding: "6px 12px", borderBottom: expanded === i ? "none" : "1px solid var(--line)", fontFamily: "var(--font-mono)", fontSize: 10.5, alignItems: "center", cursor: "pointer", background: expanded === i ? "var(--bg-2)" : i === 0 ? "var(--accent-soft)" : "transparent" }}>
+                      <span style={{ color: i === 0 ? "var(--accent)" : "var(--text-dim)" }}>{i === 0 ? "★" : i + 1}</span>
+                      <span style={{ minWidth: 0, display: "flex", alignItems: "center", gap: 5 }}>
+                        <span style={{ width: 6, height: 6, borderRadius: 2, background: SRC_CFG[r.source].color, flexShrink: 0 }} />
+                        <span style={{ color: "var(--text-bright)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name}</span>
+                      </span>
+                      <span style={{ textAlign: "right", color: r.profit >= 0 ? "var(--green)" : "var(--red)", fontWeight: 600 }}>{r.profit >= 0 ? "+" : "−"}${Math.abs(r.profit).toFixed(0)}</span>
+                      <span style={{ textAlign: "right", color: r.totalReturn >= 0 ? "var(--green)" : "var(--red)" }}>{r.totalReturn >= 0 ? "+" : ""}{r.totalReturn.toFixed(1)}%</span>
+                      <span style={{ textAlign: "right", color: r.winRate >= 50 ? "var(--green)" : "var(--amber)" }}>{r.winRate.toFixed(0)}%</span>
+                      <span style={{ textAlign: "right", color: "var(--text-dim)" }}>{r.trades}</span>
+                      <span style={{ textAlign: "right", color: r.profitFactor >= 1 ? "var(--green)" : "var(--red)" }}>{r.profitFactor.toFixed(2)}</span>
+                      <span style={{ textAlign: "center", color: "var(--text-dim)", transform: expanded === i ? "rotate(90deg)" : "none", transition: "transform .12s" }}>›</span>
+                    </div>
+                    {expanded === i && <StrategyDetail row={r} feat={featRef.current} capital={capital} src={SRC_CFG[r.source]} />}
+                  </React.Fragment>
                 ))}
               </div>
             </div>
@@ -174,6 +183,75 @@ function SimulatorPage({ lang }) {
       ) : (
         <div className="panel" style={{ padding: 40, textAlign: "center", color: "var(--red)", fontFamily: "var(--font-mono)", fontSize: 12 }}>не удалось загрузить свечи · проверьте соединение</div>
       )}
+    </div>
+  );
+}
+
+function StrategyDetail({ row, feat, capital, src }) {
+  const rules = typeof genesRules === "function" && row.genes ? genesRules(row.genes) : [];
+  const plan = feat && feat.candles && feat.f && typeof genesPlan === "function" && row.genes
+    ? genesPlan(feat.candles, feat.f, row.genes, { capital, maxLev: 50 }) : null;
+  const long = row.genes && row.genes.side === "buy";
+  const px = v => v == null ? "—" : v < 1 ? v.toFixed(5) : v < 100 ? v.toFixed(3) : v.toLocaleString("en-US", { maximumFractionDigits: 2 });
+  return (
+    <div style={{ padding: "10px 14px 14px", borderBottom: "1px solid var(--line)", background: "var(--bg-2)", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+      {/* Rulebook */}
+      <div style={{ minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+          <span style={{ width: 6, height: 6, borderRadius: 2, background: src.color }} />
+          <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: 0.08 }}>Правила стратегии · {src.label}</span>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          {rules.map((r, k) => (
+            <div key={k} style={{ display: "grid", gridTemplateColumns: "104px 1fr", gap: 8, alignItems: "baseline" }}>
+              <span style={{ fontFamily: "var(--font-mono)", fontSize: 9.5, color: "var(--text-dim)" }}>{r.k}</span>
+              <span style={{ fontSize: 11, color: "var(--text-bright)", lineHeight: 1.35 }}>{r.v}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+      {/* Capital-aware execution plan */}
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: 0.08, marginBottom: 6 }}>
+          План входа · капитал ${capital.toLocaleString("en-US")}
+        </div>
+        {!plan ? (
+          <div style={{ fontFamily: "var(--font-mono)", fontSize: 10.5, color: "var(--text-dim)" }}>нет данных свечей</div>
+        ) : (
+          <>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
+              <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, padding: "2px 8px", borderRadius: 2, background: long ? "oklch(0.7 0.14 150 / 0.14)" : "oklch(0.65 0.18 25 / 0.14)", color: long ? "var(--green)" : "var(--red)", border: `1px solid ${long ? "oklch(0.7 0.14 150 / 0.3)" : "oklch(0.65 0.18 25 / 0.3)"}` }}>{long ? "▲ ЛОНГ" : "▼ ШОРТ"}</span>
+              <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, padding: "2px 8px", borderRadius: 2, background: "var(--accent-soft)", color: "var(--accent)", border: "1px solid oklch(0.74 0.075 var(--accent-h) / 0.4)" }}>плечо {plan.lev}x{plan.levCapped ? " (огранич.)" : ""}</span>
+              <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, padding: "2px 8px", borderRadius: 2, background: "var(--bg-0)", color: "var(--text-dim)", border: "1px solid var(--line)" }}>R:R {plan.rr}</span>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "5px 12px" }}>
+              <PlanRow k="Вход (рынок)" v={`$${px(plan.entry)}`} c="var(--text-bright)" />
+              <PlanRow k="Ликвидация" v={plan.liq ? `$${px(plan.liq)}` : "нет (1x)"} c="var(--red)" sub={plan.liqDistPct ? `−${plan.liqDistPct.toFixed(1)}% от входа` : ""} />
+              <PlanRow k="Стоп-лосс" v={`$${px(plan.sl)}`} c="var(--amber)" sub={`−${(plan.slPct * 100).toFixed(2)}%`} />
+              <PlanRow k="Тейк-профит" v={`$${px(plan.tp)}`} c="var(--green)" sub={`+${(plan.slPct * plan.rr * 100).toFixed(2)}%`} />
+              <PlanRow k="Маржа" v={`$${plan.margin.toFixed(0)}`} c="var(--text-bright)" sub={`${(plan.margin / plan.budget * 100).toFixed(0)}% капитала`} />
+              <PlanRow k="Позиция" v={`$${plan.notional.toFixed(0)}`} c="var(--text-bright)" sub={`${plan.qty < 1 ? plan.qty.toFixed(4) : plan.qty.toFixed(3)} монет`} />
+              <PlanRow k="Прибыль @TP" v={`+$${plan.profitAtTp.toFixed(0)}`} c="var(--green)" sub={`+${(plan.profitAtTp / plan.budget * 100).toFixed(1)}% счёта`} />
+              <PlanRow k="Убыток @SL" v={`−$${plan.lossAtSl.toFixed(0)}`} c="var(--red)" sub={`риск ${(plan.lossAtSl / plan.budget * 100).toFixed(1)}% счёта`} />
+            </div>
+            <div style={{ marginTop: 8, fontFamily: "var(--font-mono)", fontSize: 8.5, color: "var(--text-dim)", lineHeight: 1.45 }}>
+              Плечо {plan.lev}x — наименьшее, при котором ликвидация ({plan.maxSafeLev}x потолок безопасности) остаётся за стопом; риск на сделку 2% счёта.
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PlanRow({ k, v, c, sub }) {
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 6, borderBottom: "1px dotted var(--line)", paddingBottom: 3 }}>
+      <span style={{ fontFamily: "var(--font-mono)", fontSize: 9.5, color: "var(--text-dim)" }}>{k}</span>
+      <span style={{ textAlign: "right" }}>
+        <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: c, fontWeight: 500 }}>{v}</span>
+        {sub && <span style={{ display: "block", fontFamily: "var(--font-mono)", fontSize: 8, color: "var(--text-dim)" }}>{sub}</span>}
+      </span>
     </div>
   );
 }
