@@ -38,7 +38,11 @@ function autoEntry(candles, genes, cfg) {
   const f = computeFeatures(candles);
   const i = candles.length - 1;
   if (!genesEntry(genes, f, i)) return null;
-  return genesPlan(candles, f, genes, { capital: (cfg && cfg.capital) || 10000, maxLev: (cfg && cfg.maxLev) || 50 });
+  cfg = cfg || {};
+  return genesPlan(candles, f, genes, {
+    capital: cfg.capital || 10000, maxLev: cfg.maxLev || 50,
+    riskPct: cfg.riskPct != null ? cfg.riskPct : 0.02, levCap: cfg.levCap || 20,
+  });
 }
 
 Object.assign(window, { autoPickStrategy, autoEntry });

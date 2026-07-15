@@ -257,6 +257,14 @@ function nowTsHM() {
 
 /* ChartWithSignals moved to crypto-chart.jsx (loaded before this file). */
 
+/* Auto-agent aggressiveness presets: how much of the budget it risks per trade,
+ * the leverage ceiling, and how many positions it may hold at once. */
+const AUTO_PRESETS = {
+  safe:   { label: "Осторожно",  maxPos: 1, riskPct: 0.01, levCap: 5 },
+  normal: { label: "Норма",      maxPos: 2, riskPct: 0.02, levCap: 20 },
+  bold:   { label: "Агрессивно", maxPos: 3, riskPct: 0.04, levCap: 20 },
+};
+
 /* ─────────────────────────────────────────────────────────
  * CryptoSignalsPanel — main component
  * ────────────────────────────────────────────────────────*/
@@ -364,7 +372,9 @@ function CryptoSignalsPanel({ lang }) {
   const [autoOn, setAutoOn] = useState(false);
   const [autoStrat, setAutoStrat] = useState(null);   // {genes, name, roi, win, …}
   const [autoLog, setAutoLog] = useState([]);          // recent action lines
+  const [autoPreset, setAutoPreset] = useState("normal");   // aggressiveness
   const autoRef = useRef({ lastEval: 0, lastPickTrades: 0, lastClosedAuto: 0, cooldownUntil: 0 });
+  const autoCfg = AUTO_PRESETS[autoPreset] || AUTO_PRESETS.normal;
   // Trading capital — owned by Settings; everything (margin, leverage) is derived from it.
   const [budget, setBudget] = useState(loadBudget);
   useEffect(() => {
@@ -604,7 +614,7 @@ function CryptoSignalsPanel({ lang }) {
     if (!autoOn || !candles.length || typeof autoEntry !== "function") return;
     const now = Date.now();
     const st = autoRef.current;
-    const cfg = { capital: budget, maxLev: asset.maxLev || 100 };
+    const cfg = { capital: budget, maxLev: asset.maxLev || 100, riskPct: autoCfg.riskPct, levCap: autoCfg.levCap };
 
     // detect closed agent trades → log the result + a short cooldown before re-entry
     const closedAuto = history.filter(h => h.signalId === "auto").length;
@@ -624,9 +634,9 @@ function CryptoSignalsPanel({ lang }) {
       else if (strat) pushAutoLog(`🧠 обучение · «${strat.name}» подтверждена лучшей`);
     }
 
-    // enter: at most one agent position at a time, ≥6s between evals, cooldown after a close
+    // enter: up to maxPos agent positions, ≥6s between evals, cooldown after a close
     const openAuto = positions.filter(p => p.signalId === "auto").length;
-    if (autoStrat && openAuto === 0 && now - st.lastEval > 6000 && now > st.cooldownUntil) {
+    if (autoStrat && openAuto < autoCfg.maxPos && now - st.lastEval > 6000 && now > st.cooldownUntil) {
       st.lastEval = now;
       const plan = autoEntry(candles, autoStrat.genes, cfg);
       if (plan && plan.margin > 0) {
@@ -644,7 +654,7 @@ function CryptoSignalsPanel({ lang }) {
       }
     }
   // eslint-disable-next-line
-  }, [candles, autoOn]);
+  }, [candles, autoOn, autoPreset]);
 
   // ─── new signals + verification (every ~5s) ────
   useInterval(() => {
@@ -1071,6 +1081,22 @@ function CryptoSignalsPanel({ lang }) {
                 {autoStrat ? autoStrat.name : "подбор стратегии…"}
               </div>
               {autoStrat && <div style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--text-dim)" }}>бэктест ROI {autoStrat.roi.toFixed(1)}% · win {autoStrat.win.toFixed(0)}% · PF {autoStrat.pf === Infinity ? "∞" : autoStrat.pf.toFixed(2)}</div>}
+            </div>
+            <div>
+              <div style={{ fontFamily: "var(--font-mono)", fontSize: 8.5, color: "var(--text-dim)", marginBottom: 3, textTransform: "uppercase" }}>агрессивность</div>
+              <div style={{ display: "flex", gap: 3 }}>
+                {Object.keys(AUTO_PRESETS).map(k => (
+                  <button key={k} onClick={() => setAutoPreset(k)} style={{
+                    fontFamily: "var(--font-mono)", fontSize: 9.5, padding: "2px 7px", borderRadius: 2, cursor: "pointer",
+                    background: autoPreset === k ? "var(--accent-soft)" : "transparent",
+                    color: autoPreset === k ? "var(--accent)" : "var(--text-dim)",
+                    border: `1px solid ${autoPreset === k ? "oklch(0.78 0.16 var(--accent-h) / 0.4)" : "var(--line)"}`,
+                  }}>{AUTO_PRESETS[k].label}</button>
+                ))}
+              </div>
+              <div style={{ fontFamily: "var(--font-mono)", fontSize: 8.5, color: "var(--text-dim)", marginTop: 3 }}>
+                риск {(autoCfg.riskPct * 100).toFixed(0)}% · до {autoCfg.maxPos} позиц. · плечо ≤{autoCfg.levCap}x
+              </div>
             </div>
             <div style={{ display: "flex", gap: 12, fontFamily: "var(--font-mono)", fontSize: 10.5 }}>
               <span>сделок <span style={{ color: "var(--text-bright)" }}>{ah.length}</span>{openA ? <span style={{ color: "var(--accent-2)" }}> (+{openA} откр.)</span> : null}</span>

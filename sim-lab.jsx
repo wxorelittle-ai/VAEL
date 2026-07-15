@@ -211,7 +211,8 @@ function genesPlan(candles, f, g, cfg) {
   const tp = long ? price + slDist * tpR : price - slDist * tpR;
 
   const budget = cfg.capital || 10000;
-  const riskPct = 0.02, LIQ_BUFFER = 1.5, HARD_LEV_CAP = 20, TGT_MARGIN_FRAC = 0.25, MAX_MARGIN_FRAC = 0.5;
+  const riskPct = cfg.riskPct != null ? cfg.riskPct : 0.02;   // fraction of capital risked per trade
+  const LIQ_BUFFER = 1.5, HARD_LEV_CAP = cfg.levCap || 20, TGT_MARGIN_FRAC = 0.25, MAX_MARGIN_FRAC = 0.5;
   const exchMaxLev = cfg.maxLev || 50;
   const riskUsd = budget * riskPct;
   const maxSafeLev = Math.max(1, Math.floor(1 / (slPct * LIQ_BUFFER)));   // liq stays beyond the stop
