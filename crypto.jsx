@@ -620,6 +620,7 @@ function CryptoSignalsPanel({ lang }) {
   const [signals, setSignals] = useState([]);
   const [positions, setPositions] = useState([]);
   const [history, setHistory] = useState([]);
+  const [pending, setPending] = useState([]); // resting limit orders waiting for their price
   const [form, setForm] = useState({ side: "buy", amount: 500, lev: 1, useSlTp: true });
   // Trading capital — owned by Settings; everything (margin, leverage) is derived from it.
   const [budget, setBudget] = useState(loadBudget);
@@ -649,7 +650,8 @@ function CryptoSignalsPanel({ lang }) {
       const saved = JSON.parse(localStorage.getItem(`vael.trades.${asset.bybit}`) || "null");
       setPositions(Array.isArray(saved?.positions) ? saved.positions : []);
       setHistory(Array.isArray(saved?.history) ? saved.history : []);
-    } catch (_) { setPositions([]); setHistory([]); }
+      setPending(Array.isArray(saved?.pending) ? saved.pending : []);
+    } catch (_) { setPositions([]); setHistory([]); setPending([]); }
     hydratedKeyRef.current = asset.bybit;
   }, [assetIdx]);
 
@@ -665,8 +667,8 @@ function CryptoSignalsPanel({ lang }) {
   // keyed per asset. Reload / reopen restores exactly what was on screen.
   useEffect(() => {
     if (hydratedKeyRef.current !== asset.bybit) return; // don't write during a switch
-    try { localStorage.setItem(`vael.trades.${asset.bybit}`, JSON.stringify({ positions, history })); } catch (_) {}
-  }, [positions, history, asset.bybit]);
+    try { localStorage.setItem(`vael.trades.${asset.bybit}`, JSON.stringify({ positions, history, pending })); } catch (_) {}
+  }, [positions, history, pending, asset.bybit]);
 
   // proposed entry is stale when the symbol or timeframe changes
   useEffect(() => { setEntryPlan(null); }, [assetIdx, tf]);
@@ -798,6 +800,12 @@ function CryptoSignalsPanel({ lang }) {
     if (toClose.length > 0) {
       toClose.forEach(({ id, exitPrice, reason }) => closePosition(id, exitPrice, reason));
     }
+
+    // fill resting limit orders once the market reaches their price. A buy limit
+    // sits below and fills on a dip (price ≤ entry); a sell limit sits above and
+    // fills on a bounce (price ≥ entry).
+    const toFill = pending.filter(o => (o.side === "buy" ? price <= o.entry : price >= o.entry));
+    if (toFill.length > 0) toFill.forEach(o => fillPending(o));
   // eslint-disable-next-line
   }, [candles]);
 
@@ -923,6 +931,29 @@ function CryptoSignalsPanel({ lang }) {
   function openFromPlan(plan) {
     if (!plan) return;
     const entry = plan.entry;   // planned price, NOT candles[last].close
+    const dec = entry < 10 ? 4 : 2;
+    const isLimit = plan.entryType === "limit";
+    // a limit whose price the market hasn't reached yet → REST the order and wait
+    const reached = plan.side === "buy" ? plan.price <= entry : plan.price >= entry;
+    if (isLimit && !reached) {
+      const order = {
+        id: `O-${Date.now()}`, side: plan.side, entry,
+        sl: plan.sl, tp: plan.tp, lev: plan.lev, margin: plan.amount,
+        sym: asset.sym, bybit: asset.bybit, mktAtPlace: plan.price,
+        placedAt: nowTsHM(), placedTs: Date.now(),
+      };
+      setPending(prev => [...prev, order]);
+      setTab("pending");
+      setEntryPlan(null);
+      window.__emitToast?.({
+        kind: plan.side === "buy" ? "buy" : "sell",
+        title: `${asset.sym} · лимит-заявка выставлена`,
+        body: `${plan.side === "buy" ? "ЛОНГ" : "ШОРТ"} ждёт цену ${entry.toFixed(dec)} (рынок ${plan.price.toFixed(dec)})`,
+        meta: `маржа ${order.margin}$ × ${order.lev}x · TP ${plan.tp.toFixed(dec)} / SL ${plan.sl.toFixed(dec)}`,
+      });
+      return;
+    }
+    // market plan (or price already at/through the level) → fill now at the plan price
     const newPos = makePosition({
       side: plan.side, price: entry,
       sl: plan.sl, tp: plan.tp, signalId: null,
@@ -931,13 +962,41 @@ function CryptoSignalsPanel({ lang }) {
     setPositions(prev => [...prev, newPos]);
     setTab("open");
     setEntryPlan(null);
-    const dec = entry < 10 ? 4 : 2;
-    const isLimit = plan.entryType === "limit";
     window.__emitToast?.({
       kind: "open",
       title: `${asset.sym} · ${plan.side === "buy" ? "ЛОНГ" : "ШОРТ"} по плану`,
       body: `Маржа ${newPos.margin}$ × ${newPos.lev}x = ${newPos.size}$ @ ${entry.toFixed(dec)} · TP ${plan.tp.toFixed(dec)} / SL ${plan.sl.toFixed(dec)}`,
-      meta: `${isLimit ? `лимит · заявка по ${entry.toFixed(dec)} (рынок ${plan.price.toFixed(dec)})` : "по рынку"}${newPos.liq ? ` · ликв. ${newPos.liq.toFixed(newPos.liq < 10 ? 4 : 2)}` : ""}`,
+      meta: `по рынку${newPos.liq ? ` · ликв. ${newPos.liq.toFixed(newPos.liq < 10 ? 4 : 2)}` : ""}`,
+    });
+  }
+
+  /* A resting limit order was touched — fill it into a real position at its limit
+   * price with its own stop/target/leverage/margin. */
+  function fillPending(order) {
+    const newPos = makePosition({
+      side: order.side, price: order.entry,
+      sl: order.sl, tp: order.tp, signalId: "limit",
+      margin: order.margin, lev: order.lev,
+    });
+    setPending(prev => prev.filter(o => o.id !== order.id));
+    setPositions(prev => [...prev, newPos]);
+    const dec = order.entry < 10 ? 4 : 2;
+    window.__emitToast?.({
+      kind: "open",
+      title: `${asset.sym} · заявка исполнена`,
+      body: `${order.side === "buy" ? "ЛОНГ" : "ШОРТ"} @ ${order.entry.toFixed(dec)} · маржа ${newPos.margin}$ × ${newPos.lev}x = ${newPos.size}$`,
+      meta: `TP ${order.tp.toFixed(dec)} / SL ${order.sl.toFixed(dec)}${newPos.liq ? ` · ликв. ${newPos.liq.toFixed(newPos.liq < 10 ? 4 : 2)}` : ""}`,
+    });
+  }
+
+  function cancelPending(id) {
+    const o = pending.find(x => x.id === id);
+    setPending(prev => prev.filter(x => x.id !== id));
+    if (o) window.__emitToast?.({
+      kind: "close",
+      title: `${asset.sym} · заявка отменена`,
+      body: `${o.side === "buy" ? "ЛОНГ" : "ШОРТ"} лимит @ ${o.entry.toFixed(o.entry < 10 ? 4 : 2)} снят`,
+      meta: "",
     });
   }
 
@@ -1208,6 +1267,8 @@ function CryptoSignalsPanel({ lang }) {
         }}>
           <TabBtn active={tab === "open"} onClick={() => setTab("open")}
             label="Открытые" count={positions.length} />
+          <TabBtn active={tab === "pending"} onClick={() => setTab("pending")}
+            label="Заявки" count={pending.length} />
           <TabBtn active={tab === "history"} onClick={() => setTab("history")}
             label="История сделок" count={history.length} />
           <TabBtn active={tab === "signals"} onClick={() => setTab("signals")}
@@ -1219,6 +1280,7 @@ function CryptoSignalsPanel({ lang }) {
         </div>
         <div className="scroll" style={{ flex: 1, overflowY: "auto" }}>
           {tab === "open" && <OpenPositionsTable positions={positions} onClose={(id) => closePosition(id)} />}
+          {tab === "pending" && <PendingOrdersTable pending={pending} price={priceNow} onCancel={cancelPending} />}
           {tab === "history" && <HistoryTable history={history} />}
           {tab === "signals" && <SignalsTable signals={[...signals].reverse()} hoveredId={hoveredSignalId} onHover={setHoveredSignalId} onTrade={openFromSignal} />}
           {tab === "book" && <OrderbookView book={orderbook} lastPrice={priceNow} />}
@@ -1888,6 +1950,50 @@ function OpenPositionsTable({ positions, onClose }) {
               color: "var(--text-mid)", cursor: "pointer", borderRadius: 2,
               fontFamily: "var(--font-mono)", fontSize: 9.5,
             }}>ЗАКРЫТЬ</button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function PendingOrdersTable({ pending, price, onCancel }) {
+  if (pending.length === 0) {
+    return <EmptyState text="Нет активных заявок. «Открыть по плану» с лимитным входом поставит заявку, ждущую свою цену." />;
+  }
+  return (
+    <div>
+      <THead cols={["Тип", "Маржа", "Плечо", "Лимит", "Рынок", "До цели", "Стоп", "Цель", "Выставлена", ""]}
+        grid="66px 62px 50px 74px 74px 68px 74px 74px 84px 66px" />
+      {pending.map(o => {
+        const isBuy = o.side === "buy";
+        const color = isBuy ? "var(--green)" : "var(--red)";
+        const lev = o.lev || 1;
+        const dec = o.entry < 10 ? 4 : 2;
+        const distPct = price ? ((o.entry - price) / price) * 100 : 0;   // signed distance to the limit
+        return (
+          <div key={o.id} style={{
+            display: "grid", gridTemplateColumns: "66px 62px 50px 74px 74px 68px 74px 74px 84px 66px",
+            alignItems: "center", padding: "5px 12px",
+            borderBottom: "1px solid var(--line)",
+            fontFamily: "var(--font-mono)", fontSize: 10.5,
+            background: "oklch(0.7 0.13 260 / 0.05)",
+          }}>
+            <span style={{ color, fontWeight: 600 }}>{isBuy ? "▲ ЛОНГ" : "▼ ШОРТ"} <span style={{ color: "var(--accent-2)", fontSize: 8.5 }}>лимит</span></span>
+            <span style={{ color: "var(--text-mid)" }}>{o.margin}$</span>
+            <span style={{ color: lev >= 25 ? "var(--red)" : lev >= 10 ? "var(--amber)" : "var(--accent)", fontWeight: 600 }}>{lev}x</span>
+            <span style={{ color: "var(--accent-2)", fontWeight: 600 }}>{o.entry.toFixed(dec)}</span>
+            <span style={{ color: "var(--text-bright)" }}>{price ? price.toFixed(dec) : "—"}</span>
+            <span style={{ color: "var(--text-dim)" }}>{Math.abs(distPct).toFixed(2)}%</span>
+            <span style={{ color: "var(--red)" }}>{o.sl.toFixed(dec)}</span>
+            <span style={{ color: "var(--green)" }}>{o.tp.toFixed(dec)}</span>
+            <span style={{ color: "var(--text-dim)" }}>{o.placedAt}</span>
+            <button onClick={() => onCancel(o.id)} style={{
+              padding: "2px 8px",
+              background: "var(--bg-2)", border: "1px solid var(--line-bright)",
+              color: "var(--text-mid)", cursor: "pointer", borderRadius: 2,
+              fontFamily: "var(--font-mono)", fontSize: 9.5,
+            }}>СНЯТЬ</button>
           </div>
         );
       })}
