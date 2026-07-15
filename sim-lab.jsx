@@ -57,9 +57,12 @@ function genesEntry(g, f, i) {
 
 /* Backtest a genes strategy on precomputed features. Same rules as the terminal:
  * ATR stop/target, 0.055% taker fee per side (matches the demo terminal's
- * FEE_RATE in crypto.jsx), no overlapping trades. */
+ * FEE_RATE in crypto.jsx), plus a slippage cost so fills aren't at the ideal
+ * price, no overlapping trades. */
 function backtestGenes(candles, f, g, cfg) {
   const cap0 = cfg.capital, lev = cfg.leverage || 1, feeRate = (cfg.fees != null ? cfg.fees : 0.055) / 100, riskFrac = 0.01, H = 24;
+  // slippage per side (fraction of notional) — real fills are worse than the mid.
+  const slipRate = (cfg.slip != null ? cfg.slip : 0.02) / 100;
   const long = g.side === "buy";
   let equity = cap0, wins = 0, losses = 0, gW = 0, gL = 0;
   const curve = [{ v: equity }];
@@ -79,7 +82,8 @@ function backtestGenes(candles, f, g, cfg) {
     if (R === null) { const xp = f.closes[xi]; const mv = long ? xp - entry : entry - xp; R = Math.max(-1, Math.min(g.tpR || 1.8, mv / slD)); }
     const riskAmt = equity * riskFrac * lev;
     const notional = riskAmt / (slD / entry);
-    equity = Math.max(1, equity + R * riskAmt - notional * feeRate * 2);
+    const cost = notional * (feeRate + slipRate) * 2;   // fee + slippage, entry & exit
+    equity = Math.max(1, equity + R * riskAmt - cost);
     if (R > 0) { wins++; gW += R * riskAmt; } else { losses++; gL += Math.abs(R * riskAmt); }
     curve.push({ v: equity });
     i = xi + 1;

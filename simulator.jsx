@@ -70,7 +70,7 @@ function SimulatorPage({ lang }) {
             Лаборатория стратегий <span style={{ color: "var(--text-dim)", fontWeight: 400 }}>· библиотека + генерация + эволюция</span>
           </div>
           <div className="mono" style={{ fontSize: 10.5, color: "var(--text-dim)", marginTop: 3 }}>
-            реальный бэктест на свечах Bybit · комиссия 0.02% · прибыльные стратегии остаются и отслеживаются в динамике
+            реальный бэктест на свечах Bybit · комиссия 0.055% + проскальзывание 0.02% · прибыльные стратегии остаются и отслеживаются в динамике
           </div>
         </div>
         {typeof LiveTag === "function" && <LiveTag status={running ? "connecting" : rows ? "live" : "rest"} />}
