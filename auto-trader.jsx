@@ -461,8 +461,85 @@ function consensusEconomics(candles, cfg) {
   return { rows, breakevenWinRate: +(1 / (1 + tpR) * 100).toFixed(1) };
 }
 
+/* ── Do positioning data actually predict price?
+ *
+ * Every indicator in this app re-reads the same candles, so none of them can know
+ * anything the market has not already priced. Funding, open interest and the long/short
+ * split are different in kind: they describe who is positioned how, not where price has
+ * been. That makes them the first genuinely new information here — and therefore worth
+ * measuring rather than assuming.
+ *
+ * Method: line each metric up with the hourly closes, then measure the return AFTER the
+ * metric was known (never before), bucket by tercile, and report the correlation with
+ * the sample size. No trading rule is derived here — first find out whether there is
+ * any signal at all. ── */
+async function derivPredictivePower(symbol, cfg) {
+  cfg = cfg || {};
+  if (typeof bybitFetchKlines !== "function" || typeof bybitFundingHistory !== "function") return null;
+  const horizons = cfg.horizons || [1, 4, 8, 24];   // hours ahead
+  const [k, fund, oi, ls] = await Promise.all([
+    bybitFetchKlines(symbol, "60", 1000, "linear"),
+    bybitFundingHistory(symbol, 200).catch(() => []),
+    bybitOpenInterestHistory(symbol, "1h", 200).catch(() => []),
+    bybitLongShortHistory(symbol, "1h", 200).catch(() => []),
+  ]);
+  if (!k || k.length < 100) return null;
+
+  const HOUR = 3600000;
+  const closeAt = new Map();
+  k.forEach(c => closeAt.set(Math.floor(c.start / HOUR) * HOUR, c.close));
+  const fwd = (ts, h) => {
+    const t0 = Math.floor(ts / HOUR) * HOUR;
+    const p0 = closeAt.get(t0), p1 = closeAt.get(t0 + h * HOUR);
+    return (p0 == null || p1 == null) ? null : (p1 - p0) / p0 * 100;
+  };
+  const pearson = (xs, ys) => {
+    const n = xs.length; if (n < 8) return null;
+    const mx = xs.reduce((s, v) => s + v, 0) / n, my = ys.reduce((s, v) => s + v, 0) / n;
+    let num = 0, dx = 0, dy = 0;
+    for (let i = 0; i < n; i++) { const a = xs[i] - mx, b = ys[i] - my; num += a * b; dx += a * a; dy += b * b; }
+    return (dx > 0 && dy > 0) ? +(num / Math.sqrt(dx * dy)).toFixed(3) : null;
+  };
+  // split the metric into terciles and report the mean forward return of each
+  const terciles = pairs => {
+    if (pairs.length < 12) return null;
+    const sorted = [...pairs].sort((a, b) => a.x - b.x);
+    const c = Math.floor(sorted.length / 3);
+    const mean = arr => arr.length ? +(arr.reduce((s, p) => s + p.y, 0) / arr.length).toFixed(3) : null;
+    return {
+      low: { n: c, meanFwdPct: mean(sorted.slice(0, c)) },
+      mid: { n: sorted.length - 2 * c, meanFwdPct: mean(sorted.slice(c, sorted.length - c)) },
+      high: { n: c, meanFwdPct: mean(sorted.slice(-c)) },
+    };
+  };
+
+  const out = { symbol, klines: k.length, metrics: {} };
+  const study = (name, series, valueOf) => {
+    if (!series || series.length < 12) { out.metrics[name] = { skipped: "мало данных", points: series ? series.length : 0 }; return; }
+    const per = {};
+    horizons.forEach(h => {
+      const pairs = [];
+      series.forEach((row, idx) => {
+        const x = valueOf(row, idx, series);
+        if (x == null || !isFinite(x)) return;
+        const y = fwd(row.ts, h);
+        if (y == null) return;
+        pairs.push({ x, y });
+      });
+      per[`${h}ч`] = pairs.length < 12 ? { n: pairs.length, note: "мало пар" }
+        : { n: pairs.length, corr: pearson(pairs.map(p => p.x), pairs.map(p => p.y)), terciles: terciles(pairs) };
+    });
+    out.metrics[name] = per;
+  };
+
+  study("funding", fund, r => r.rate * 100);                         // % per 8h
+  study("longShortRatio", ls, r => r.buyRatio);                      // share of accounts long
+  study("oiChangePct", oi, (r, i, s) => i === 0 ? null : (r.oi - s[i - 1].oi) / s[i - 1].oi * 100);
+  return out;
+}
+
 Object.assign(window, {
   autoPickStrategy, autoEntry, autoScanAssets, autoTrain, autoBacktestAgent,
   autoRegimeAt, autoRegimeFit, autoVolMedian, entrySignalEconomics,
-  consensusVotes, consensusEconomics, AUTO_GATE,
+  consensusVotes, consensusEconomics, derivPredictivePower, AUTO_GATE,
 });

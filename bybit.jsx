@@ -203,6 +203,49 @@ async function bybitFetchKlines(symbol, interval = "1", limit = 90, category = "
   return json.result.list.map(parseKlineRow).reverse();
 }
 
+/* ── Derivatives history: the only data we have that is NOT already baked into price.
+ * Every indicator in this app is a re-reading of the same candles, so it can add no
+ * information the market has not already seen. Funding, open interest and the
+ * long/short account split are different: they describe positioning, not price. Bybit
+ * publishes history for all three, so their predictive power can be MEASURED rather
+ * than assumed. These are linear (perp) endpoints — spot has no funding or OI. ── */
+
+// Funding rate history → [{ ts, rate }] chronological. Paid every 8h on perps.
+async function bybitFundingHistory(symbol, limit = 200) {
+  const url = `${BYBIT_REST}/v5/market/funding/history?category=linear&symbol=${symbol}&limit=${Math.min(limit, 200)}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`funding HTTP ${res.status}`);
+  const json = await res.json();
+  if (json.retCode !== 0) throw new Error(json.retMsg || "funding retCode≠0");
+  return (json.result.list || [])
+    .map(r => ({ ts: +r.fundingRateTimestamp, rate: +r.fundingRate }))
+    .sort((a, b) => a.ts - b.ts);
+}
+
+// Open-interest history → [{ ts, oi }] chronological. interval: 5min|15min|30min|1h|4h|1d
+async function bybitOpenInterestHistory(symbol, interval = "1h", limit = 200) {
+  const url = `${BYBIT_REST}/v5/market/open-interest?category=linear&symbol=${symbol}&intervalTime=${interval}&limit=${Math.min(limit, 200)}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`oi HTTP ${res.status}`);
+  const json = await res.json();
+  if (json.retCode !== 0) throw new Error(json.retMsg || "oi retCode≠0");
+  return (json.result.list || [])
+    .map(r => ({ ts: +r.timestamp, oi: +r.openInterest }))
+    .sort((a, b) => a.ts - b.ts);
+}
+
+// Long/short account ratio → [{ ts, buyRatio, sellRatio }] chronological.
+async function bybitLongShortHistory(symbol, period = "1h", limit = 200) {
+  const url = `${BYBIT_REST}/v5/market/account-ratio?category=linear&symbol=${symbol}&period=${period}&limit=${Math.min(limit, 200)}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`ratio HTTP ${res.status}`);
+  const json = await res.json();
+  if (json.retCode !== 0) throw new Error(json.retMsg || "ratio retCode≠0");
+  return (json.result.list || [])
+    .map(r => ({ ts: +r.timestamp, buyRatio: +r.buyRatio, sellRatio: +r.sellRatio }))
+    .sort((a, b) => a.ts - b.ts);
+}
+
 async function bybitFetchTicker(symbol, category = "spot") {
   const url = `${BYBIT_REST}/v5/market/tickers?category=${category}&symbol=${symbol}`;
   const res = await fetch(url);
@@ -636,6 +679,7 @@ Object.assign(window, {
   toBybitSymbol, bybitFetchKlines, bybitFetchTicker, useBybitMarket, useBybitTickers,
   bybitFetchOrderbook, bybitFetchRecentTrades, useBybitOrderbook, useBybitTrades, useBybitL2,
   bybitFetchLinearStats, useBybitLinearStats, bybitFetchLongShort, useBybitLongShort,
+  bybitFundingHistory, bybitOpenInterestHistory, bybitLongShortHistory,
   useMarketMetrics, bybitFetchLeverageUniverse,
   aggregateCandles, useSecondCandles, binanceFetch1s,
   BYBIT_REST, BYBIT_WS_SPOT, BYBIT_WS_LINEAR, BINANCE_REST,
