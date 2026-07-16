@@ -619,23 +619,41 @@ function CryptoSignalsPanel({ lang }) {
       .catch(() => { setAutoTraining(null); pushAutoLog("🎓 обучение прервано"); });
   }
 
+  /* Strategy selection needs a LONG history: runSimLab holds out a recent slice to
+   * score candidates honestly, and on the chart's 200 bars that slice holds ~2 trades
+   * — no honest gate can pass that. So pull a deeper series just for picking. Async;
+   * the result lands in autoStrat a moment later. */
+  function pickStrategy(tag) {
+    if (typeof autoPickStrategy !== "function" || typeof bybitFetchKlines !== "function") return;
+    const st = autoRef.current;
+    if (st.picking) return;
+    st.picking = true; st.lastSearch = Date.now();
+    const cfg = { capital: budget, maxLev: asset.maxLev || 100, riskPct: autoCfg.riskPct, levCap: autoCfg.levCap };
+    bybitFetchKlines(asset.bybit, restInterval, 1000, cat)
+      .then(long => {
+        st.picking = false;
+        const strat = autoPickStrategy(long && long.length >= 300 ? long : candles, asset.bybit, cfg);
+        if (strat) {
+          setAutoStrat(strat);
+          pushAutoLog(`${tag} «${strat.name}» · OOS ROI ${strat.roi.toFixed(1)}% · ${strat.trades} сд. · PF ${strat.pf === Infinity ? "∞" : strat.pf.toFixed(2)}`);
+        } else {
+          setAutoStrat(null);
+          pushAutoLog(`${tag} эджа нет на невиданных данных — жду, не торгую (порог ≥${AUTO_GATE.minTrades} сд. · PF ≥${AUTO_GATE.minPf})`);
+        }
+      })
+      .catch(() => { st.picking = false; });
+  }
+
   function toggleAuto() {
     if (autoOn) { setAutoOn(false); pushAutoLog("⏸ агент остановлен"); return; }
-    const strat = typeof autoPickStrategy === "function"
-      ? autoPickStrategy(candles, asset.bybit, { capital: budget, maxLev: asset.maxLev || 100 }) : null;
     const st = autoRef.current;
     st.lastEval = 0; st.cooldownUntil = 0;
     st.lastPickTrades = history.filter(h => h.signalId === "auto").length;
     st.lastClosedAuto = st.lastPickTrades;
     st.startAutoNet = history.filter(h => h.signalId === "auto").reduce((s, h) => s + (h.pnl || 0), 0);   // drawdown baseline
-    st.lastSearch = Date.now();
-    if (strat) {
-      setAutoStrat(strat);
-      pushAutoLog(`▶ старт · «${strat.name}» (ROI ${strat.roi.toFixed(1)}% · ${strat.trades} сд. · PF ${strat.pf === Infinity ? "∞" : strat.pf.toFixed(2)})`);
-    } else {
-      setAutoStrat(null);
-      pushAutoLog(`▶ старт · подтверждённого эджа нет — жду, не торгую (порог: ≥${AUTO_GATE.minTrades} сд., PF ≥${AUTO_GATE.minPf})`);
-    }
+    setAutoStrat(null);
+    pushAutoLog("▶ старт · проверяю стратегии на невиданных данных…");
+    pickStrategy("▶ старт ·");
     setAutoOn(true);
     setTab("open");
   }
@@ -669,26 +687,16 @@ function CryptoSignalsPanel({ lang }) {
       return;
     }
 
-    // learn: every 5 closed agent trades, re-run the lab and adopt the new best
+    // learn: every 5 closed agent trades, re-test on unseen data and adopt the new best
     if (autoStrat && closedAuto - st.lastPickTrades >= 5) {
       st.lastPickTrades = closedAuto;
-      const strat = autoPickStrategy(candles, asset.bybit, cfg);
-      if (strat && strat.name !== autoStrat.name) { setAutoStrat(strat); pushAutoLog(`🧠 обучение · перешёл на «${strat.name}» (ROI ${strat.roi.toFixed(1)}% · ${strat.trades} сд.)`); }
-      else if (strat) pushAutoLog(`🧠 обучение · «${strat.name}» подтверждена лучшей`);
-      else { setAutoStrat(null); st.lastSearch = now; pushAutoLog("⚠ эдж пропал — ухожу в ожидание, новых сделок не открываю"); }
+      pickStrategy("🧠 обучение ·");
     }
 
     // No validated edge → do NOT trade. Keep re-testing every 60s; the moment a
     // strategy clears the bar the agent starts working again.
     if (!autoStrat) {
-      if (now - (st.lastSearch || 0) > 60000) {
-        st.lastSearch = now;
-        const strat = autoPickStrategy(candles, asset.bybit, cfg);
-        if (strat) {
-          setAutoStrat(strat);
-          pushAutoLog(`✓ эдж найден · «${strat.name}» (ROI ${strat.roi.toFixed(1)}% · ${strat.trades} сд. · PF ${strat.pf === Infinity ? "∞" : strat.pf.toFixed(2)})`);
-        }
-      }
+      if (now - (st.lastSearch || 0) > 60000) pickStrategy("🔁 поиск ·");
       return;
     }
 

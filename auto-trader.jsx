@@ -14,56 +14,41 @@
  * bars is noise, not an edge. */
 const AUTO_GATE = { minTrades: 8, minPf: 1.2, minRoi: 0 };
 
-/* Pick the strategy the agent should trade now — WALK-FORWARD.
+/* Pick the strategy the agent should trade now.
  *
- * The trap this avoids: running the lab on a window and then trading whatever scored
- * best on that same window is selection on noise — you pick the curve that happened
- * to fit those exact bars. So we split the candles:
- *   • TRAIN (older ~60%) — the lab searches here: library + a fresh generation +
- *     strategies evolved from this asset's champions.
- *   • TEST (recent ~40%) — every candidate is then re-backtested on these bars,
- *     which the search never saw, and the gate is applied to THAT result.
- * Only a strategy that keeps its edge out-of-sample is tradable; otherwise null and
- * the agent waits. Champions are still recorded from the train run (that's the
- * learning), but they never buy a pass on their own. */
+ * runSimLab already walk-forwards internally: it searches on the older bars and
+ * reports totalReturn / trades / profitFactor from the held-out recent slice, ranked
+ * by that out-of-sample result (trainReturn is kept alongside for the overfit gap).
+ * So the honest job here is simply to gate on those out-of-sample numbers — and to
+ * refuse when nothing clears the bar, rather than trading the least-bad loser.
+ *
+ * Feed this a LONG series (~1000 bars). On the chart's 200 the held-out slice holds
+ * about two trades, which no honest gate can pass. */
 function autoPickStrategy(candles, asset, cfg) {
-  if (!candles || candles.length < 160 || typeof runSimLab !== "function") return null;
+  if (!candles || candles.length < 300 || typeof runSimLab !== "function") return null;
   cfg = cfg || {};
   const capital = cfg.capital || 10000;
   const gate = cfg.gate || AUTO_GATE;
 
-  const split = Math.floor(candles.length * 0.6);
-  const train = candles.slice(0, split);
-  const test = candles.slice(split);
-  if (train.length < 100 || test.length < 60) return null;
-
   const champs = (typeof loadChampions === "function" ? loadChampions() : []).filter(c => c.asset === asset && c.genes);
   const seeds = champs.slice(0, 4).map(c => c.genes);
-  const rows = runSimLab(train, { capital, leverage: 1, fees: 0.055, genCount: 8 }, seeds);
+  const rows = runSimLab(candles, { capital, leverage: 1, fees: 0.055, genCount: 8 }, seeds);
   if (!rows || !rows.length) return null;
   if (typeof recordChampions === "function") { try { recordChampions(rows, asset, Date.now()); } catch (_) {} }
 
-  // re-test every candidate on the unseen slice — this is the number that counts
-  if (typeof computeFeatures !== "function" || typeof backtestGenes !== "function") return null;
-  const tf = computeFeatures(test);
-  const oos = rows.filter(r => r.genes).map(r => {
-    const b = backtestGenes(test, tf, r.genes, { capital, leverage: 1, fees: 0.055 });
-    return { name: r.name, source: r.source, genes: r.genes, inRoi: r.totalReturn, ...b.stats };
-  });
-
-  // Gate on OUT-OF-SAMPLE performance. No fallback to "least-bad loser".
-  const passing = oos.filter(r => r.trades >= gate.minTrades
+  // Gate on the OUT-OF-SAMPLE result. No fallback to "least-bad loser".
+  const passing = rows.filter(r => r.genes
+    && r.trades >= gate.minTrades
     && r.profitFactor >= gate.minPf
     && r.totalReturn > gate.minRoi);
   if (!passing.length) return null;
 
-  passing.sort((a, b) => b.totalReturn - a.totalReturn);
-  const top = passing[0];
+  const top = passing[0];   // runSimLab already ranks by out-of-sample return
   return {
     genes: top.genes, name: top.name, source: top.source,
     roi: top.totalReturn, win: top.winRate, trades: top.trades, pf: top.profitFactor,
-    inRoi: top.inRoi,                       // what it scored on the train slice
-    considered: oos.length, passed: passing.length, oos: true,
+    inRoi: top.trainReturn,                 // in-sample score, to show the overfit gap
+    considered: rows.length, passed: passing.length, oos: true,
   };
 }
 
