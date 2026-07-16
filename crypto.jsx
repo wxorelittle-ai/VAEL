@@ -374,6 +374,7 @@ function CryptoSignalsPanel({ lang }) {
   const [autoLog, setAutoLog] = useState([]);          // recent action lines
   const [autoPreset, setAutoPreset] = useState("normal");   // aggressiveness
   const [autoScan, setAutoScan] = useState(true);           // hunt signals across assets
+  const [autoTraining, setAutoTraining] = useState(null);   // sandbox-training progress text
   const autoRef = useRef({ lastEval: 0, lastPickTrades: 0, lastClosedAuto: 0, cooldownUntil: 0, lastScan: 0, scanning: false });
   const autoCfg = AUTO_PRESETS[autoPreset] || AUTO_PRESETS.normal;
   // Trading capital — owned by Settings; everything (margin, leverage) is derived from it.
@@ -595,6 +596,28 @@ function CryptoSignalsPanel({ lang }) {
   }, [candles]);
 
   function pushAutoLog(s) { setAutoLog(prev => [`${nowTsHM()} · ${s}`, ...prev].slice(0, 8)); }
+
+  /* Sandbox: replay a long slice of history fast so the agent banks champions before
+   * (or while) it trades live, instead of learning only at the pace of real signals. */
+  function trainAgent() {
+    if (autoTraining || typeof autoTrain !== "function") return;
+    const syms = ASSETS.slice(0, 4).map(a => a.bybit);
+    setAutoTraining("старт…");
+    pushAutoLog(`🎓 обучение на истории · ${syms.length} актива × 3 окна…`);
+    autoTrain(syms, restInterval, cat, { capital: budget, rounds: 3 },
+      p => setAutoTraining(`${p.symbol.replace("USDT", "")} · окно ${p.round}/${p.rounds} · проверено ${p.tested}`))
+      .then(r => {
+        setAutoTraining(null);
+        if (!r) { pushAutoLog("🎓 обучение не удалось"); return; }
+        pushAutoLog(`🎓 готово · проверено ${r.tested} стратегий, прибыльных ${r.kept} · чемпионов ${r.champions}`);
+        if (r.best[0]) pushAutoLog(`🏆 лучшая: «${r.best[0].name}» на ${r.best[0].symbol.replace("USDT", "")} (ROI ${r.best[0].roi.toFixed(1)}%)`);
+        // adopt what it just learned for the current asset
+        const strat = typeof autoPickStrategy === "function"
+          ? autoPickStrategy(candles, asset.bybit, { capital: budget, maxLev: asset.maxLev || 100 }) : null;
+        if (strat) { setAutoStrat(strat); pushAutoLog(`🧠 взял в работу «${strat.name}» (ROI ${strat.roi.toFixed(1)}%)`); }
+      })
+      .catch(() => { setAutoTraining(null); pushAutoLog("🎓 обучение прервано"); });
+  }
 
   function toggleAuto() {
     if (autoOn) { setAutoOn(false); pushAutoLog("⏸ агент остановлен"); return; }
@@ -1087,9 +1110,17 @@ function CryptoSignalsPanel({ lang }) {
             background: "transparent", color: "var(--text-dim)", border: "1px solid var(--line)",
           }}>✕</button>
         )}
+        <button onClick={trainAgent} disabled={!!autoTraining}
+          title="Прогнать историю в песочнице: агент быстро тестирует и эволюционирует стратегии, накапливая чемпионов"
+          style={{
+            marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 600,
+            padding: "3px 10px", borderRadius: 3, cursor: autoTraining ? "default" : "pointer", letterSpacing: 0.05,
+            background: "var(--bg-2)", color: autoTraining ? "var(--text-dim)" : "var(--accent-2)",
+            border: `1px solid ${autoTraining ? "var(--line)" : "var(--accent-2)"}`, opacity: autoTraining ? 0.7 : 1,
+          }}>{autoTraining ? `🎓 ${autoTraining}` : "🎓 ОБУЧИТЬ НА ИСТОРИИ"}</button>
         <button onClick={toggleAuto} title="Автоматическая торговля (симуляция): агент сам открывает сделки, трейлит прибыль и переобучается"
           style={{
-            marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 700,
+            fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 700,
             padding: "3px 12px", borderRadius: 3, cursor: "pointer", letterSpacing: 0.05,
             background: autoOn ? "oklch(0.7 0.14 150 / 0.16)" : "var(--bg-2)",
             color: autoOn ? "var(--green)" : "var(--accent-2)",
@@ -1098,16 +1129,16 @@ function CryptoSignalsPanel({ lang }) {
       </div>
 
       {/* AGENT STATUS — visible while the autonomous agent is running */}
-      {autoOn && (() => {
+      {(autoOn || autoTraining || autoLog.length > 0) && (() => {
         const ah = history.filter(h => h.signalId === "auto");
         const wins = ah.filter(h => h.pnl > 0).length;
         const net = ah.reduce((s, h) => s + (h.pnl || 0), 0);
         const openA = positions.filter(p => p.signalId === "auto").length;
         return (
-          <div className="panel" style={{ padding: "8px 12px", display: "flex", gap: 14, alignItems: "flex-start", flexWrap: "wrap", borderLeft: "3px solid var(--green)" }}>
+          <div className="panel" style={{ padding: "8px 12px", display: "flex", gap: 14, alignItems: "flex-start", flexWrap: "wrap", borderLeft: `3px solid ${autoOn ? "var(--green)" : autoTraining ? "var(--accent-2)" : "var(--line-bright)"}` }}>
             <div style={{ minWidth: 150 }}>
               <div style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--text-dim)", letterSpacing: 0.1 }}>
-                <span style={{ color: "var(--green)" }}>●</span> АГЕНТ · СИМУЛЯЦИЯ
+                <span style={{ color: autoOn ? "var(--green)" : autoTraining ? "var(--accent-2)" : "var(--text-dim)" }}>●</span> АГЕНТ · {autoOn ? "ТОРГУЕТ" : autoTraining ? "ОБУЧАЕТСЯ" : "ОСТАНОВЛЕН"} · СИМУЛЯЦИЯ
               </div>
               <div style={{ fontFamily: "var(--font-mono)", fontSize: 11.5, color: "var(--text-bright)", marginTop: 2 }}>
                 {autoStrat ? autoStrat.name : "подбор стратегии…"}

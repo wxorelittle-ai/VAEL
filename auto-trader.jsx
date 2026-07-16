@@ -61,4 +61,45 @@ async function autoScanAssets(symbols, interval, limit, category, genes, cfg) {
   return null;
 }
 
-Object.assign(window, { autoPickStrategy, autoEntry, autoScanAssets });
+/* ── Sandbox training: instead of waiting for live signals, replay a long slice of
+ * history fast. Each round walks a different window of the candles, evolves from the
+ * champions found so far, and banks the profitable ones — so the agent arrives at
+ * live trading already trained. Returns a summary of what it learned. ── */
+async function autoTrain(symbols, interval, category, cfg, onProgress) {
+  if (typeof runSimLab !== "function" || typeof bybitFetchKlines !== "function") return null;
+  cfg = cfg || {};
+  const rounds = cfg.rounds || 3;
+  const capital = cfg.capital || 10000;
+  let tested = 0, kept = 0;
+  const best = [];
+
+  for (let s = 0; s < symbols.length; s++) {
+    const sym = symbols[s];
+    let candles = null;
+    try { candles = await bybitFetchKlines(sym, interval || "15", 1000, category || "spot"); } catch (_) { continue; }
+    if (!candles || candles.length < 200) continue;
+
+    for (let r = 0; r < rounds; r++) {
+      // walk a different slice each round → the strategy must work on unseen windows
+      const span = Math.floor(candles.length / rounds);
+      const slice = candles.slice(r * span, r * span + span);
+      if (slice.length < 120) continue;
+      const champs = (typeof loadChampions === "function" ? loadChampions() : []).filter(c => c.asset === sym && c.genes);
+      const seeds = champs.slice(0, 4).map(c => c.genes);
+      const rows = runSimLab(slice, { capital, leverage: 1, fees: 0.055, genCount: 8, genSeed: r * 8 }, seeds);
+      if (!rows || !rows.length) continue;
+      tested += rows.length;
+      kept += rows.filter(x => x.totalReturn > 0).length;
+      if (typeof recordChampions === "function") { try { recordChampions(rows, sym, Date.now()); } catch (_) {} }
+      const top = rows[0];
+      if (top && top.totalReturn > 0) best.push({ symbol: sym, name: top.name, roi: top.totalReturn });
+      if (typeof onProgress === "function") onProgress({ symbol: sym, round: r + 1, rounds, tested, kept });
+      await new Promise(res => setTimeout(res, 0));   // yield so the UI stays responsive
+    }
+  }
+  best.sort((a, b) => b.roi - a.roi);
+  const champions = typeof loadChampions === "function" ? loadChampions() : [];
+  return { tested, kept, best: best.slice(0, 3), champions: champions.length };
+}
+
+Object.assign(window, { autoPickStrategy, autoEntry, autoScanAssets, autoTrain });
