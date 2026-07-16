@@ -1209,15 +1209,26 @@ function optimalEntry(candles, opts = {}) {
       `R:R 1:${rr.toFixed(1)}`,
     ];
     const setup = aligned ? !!a.setup : (cluster.length >= 2 && rr >= 1.6);
-    // Profit-optimal ranking = EXPECTANCY, not raw reward:risk. Start from the
-    // random-walk odds of hitting the target before the stop (a further target is
-    // genuinely less likely: p0 = 1/(1+R)), then shift by conviction and structural
-    // confluence. Expected value per trade in R units is what actually grows the
-    // account — the side with the higher EV is the one worth taking.
+    /* Profit-optimal ranking = EXPECTANCY AFTER COSTS, not raw reward:risk.
+     *
+     * p0 = 1/(1+R) is the random-walk chance of tagging the target before the stop, so
+     * a fatter R:R buys nothing by itself — it is proportionally less likely. Any edge
+     * must come from conviction actually PREDICTING outcomes. Replaying 34 of these
+     * signals over history showed it barely does: the old model lifted win odds to
+     * ~60-64% on conviction alone, the realised rate was 29%. So conviction now earns
+     * only a small bounded nudge.
+     *
+     * And crucially: expectancy must be NET OF WHAT THE TRADE COSTS. A round trip pays
+     * fee + slippage twice, and against a tight ATR stop that is a large slice of R
+     * (a 0.24% stop turns ~0.15% of costs into ~0.6R). Ignoring it is exactly why the
+     * planner used to promise +0.46R and deliver losses. */
     const p0 = 1 / (1 + rr);
     const pWin = Math.max(0.05, Math.min(0.9,
-      p0 + (conf - 50) / 100 * 0.5 + Math.min(cluster.length, 3) * 0.02));
-    const evR = pWin * rr - (1 - pWin);            // expected reward in R (units of risk)
+      p0 + (conf - 50) / 100 * 0.08 + Math.min(cluster.length, 3) * 0.01));
+    const FEE = 0.00055, SLIP = 0.0002;             // per side, matching the terminal
+    const costR = slPct > 0 ? ((FEE + SLIP) * 2) / slPct : 0;   // round-trip cost in R
+    const evGross = pWin * rr - (1 - pWin);
+    const evR = evGross - costR;                   // expected reward in R, after costs
     const expectedUsd = evR * lossAtSl;            // ≈ expected $ per trade at this size
     const pickScore = evR;
 
@@ -1227,7 +1238,7 @@ function optimalEntry(candles, opts = {}) {
       margin, notional, liq, riskUsd, budget,
       profitAtTp, lossAtSl, mktRR, edgePct,
       conf, setup, reasons, atr, chasingPump,
-      pWin, evR, expectedUsd, positiveEdge: evR > 0, pickScore,
+      pWin, evR, evGross, costR, expectedUsd, positiveEdge: evR > 0, pickScore,
     };
   }
 

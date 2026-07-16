@@ -307,7 +307,96 @@ async function autoBacktestAgent(candles, asset, cfg, onProgress) {
   };
 }
 
+/* ── Are the terminal's ENTRY POINTS actually profitable?
+ *
+ * The agent (lab strategies) and the "найти точку входа" planner are two different
+ * systems — measuring one says nothing about the other. This replays optimalEntry
+ * over history with no lookahead: at each flat bar it asks for a plan using only past
+ * candles, takes it exactly as the terminal would (market now, or a limit that rests
+ * and fills on a wick touch), manages to the plan's own stop/target, and pays the same
+ * fee + slippage. Result: what the entry signals really earn. ── */
+async function entrySignalEconomics(candles, cfg, onProgress) {
+  if (!candles || candles.length < 400 || typeof optimalEntry !== "function") return null;
+  cfg = cfg || {};
+  const capital = cfg.capital || 10000;
+  const feeRate = 0.055 / 100, slipRate = 0.02 / 100;
+  const warmup = cfg.warmup || 120;      // optimalEntry needs history for its levels
+  const restBars = cfg.restBars || 24;   // how long a limit order waits before it's cancelled
+  let equity = capital, peak = capital, maxDD = 0;
+  const trades = [];
+  let pos = null, order = null;
+  let evaluated = 0, plans = 0, taken = 0, expired = 0;
+
+  for (let i = warmup; i < candles.length - 1; i++) {
+    const bar = candles[i];
+
+    // 1. manage an open position — stop first (conservative), then target
+    if (pos) {
+      const long = pos.side === "buy";
+      let exit = null, reason = null;
+      if (long) {
+        if (bar.lo <= pos.sl) { exit = pos.sl; reason = "sl"; }
+        else if (bar.hi >= pos.tp) { exit = pos.tp; reason = "tp"; }
+      } else {
+        if (bar.hi >= pos.sl) { exit = pos.sl; reason = "sl"; }
+        else if (bar.lo <= pos.tp) { exit = pos.tp; reason = "tp"; }
+      }
+      if (exit != null) {
+        const gross = long ? (exit - pos.entry) * (pos.size / pos.entry) : (pos.entry - exit) * (pos.size / pos.entry);
+        const pnl = gross - pos.size * (feeRate + slipRate) * 2;
+        equity = Math.max(1, equity + pnl);
+        trades.push({ side: pos.side, entry: pos.entry, exit, pnl, reason, evR: pos.evR, conf: pos.conf, type: pos.type });
+        peak = Math.max(peak, equity);
+        maxDD = Math.max(maxDD, peak > 0 ? (peak - equity) / peak * 100 : 0);
+        pos = null;
+      }
+      continue;
+    }
+
+    // 2. a resting limit fills on a wick touch, or expires
+    if (order) {
+      const hit = order.side === "buy" ? bar.lo <= order.entry : bar.hi >= order.entry;
+      if (hit) { pos = { ...order, type: "limit" }; taken++; order = null; }
+      else if (i - order.placed >= restBars) { order = null; expired++; }
+      continue;
+    }
+
+    // 3. flat → ask the terminal for a plan, using only the past
+    const hist = candles.slice(0, i + 1);
+    let p = null;
+    try { p = optimalEntry(hist, { budget: equity, maxLev: cfg.maxLev || 50 }); } catch (_) { p = null; }
+    evaluated++;
+    if (p && (!cfg.requireSetup || p.setup) && (!cfg.requireEdge || p.positiveEdge)) {
+      plans++;
+      const base = { side: p.side, entry: p.entry, sl: p.sl, tp: p.tp, size: p.notional, evR: p.evR, conf: p.conf };
+      if (p.entryType === "limit") order = { ...base, placed: i };
+      else { pos = { ...base, type: "market" }; taken++; }
+    }
+    if (evaluated % 20 === 0) {
+      if (typeof onProgress === "function") onProgress({ bar: i, total: candles.length, trades: trades.length, equity });
+      await new Promise(r => setTimeout(r, 0));
+    }
+  }
+
+  const wins = trades.filter(t => t.pnl > 0);
+  const losses = trades.filter(t => t.pnl <= 0);
+  const gW = wins.reduce((s, t) => s + t.pnl, 0);
+  const gL = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
+  const net = equity - capital;
+  return {
+    trades: trades.length, wins: wins.length, losses: losses.length,
+    winRate: trades.length ? wins.length / trades.length * 100 : 0,
+    net, roi: net / capital * 100, equity,
+    pf: gL > 0 ? gW / gL : (gW > 0 ? Infinity : 0),
+    maxDD, avg: trades.length ? net / trades.length : 0,
+    plans, taken, expired, evaluated,
+    byReason: trades.reduce((m, t) => { m[t.reason] = (m[t.reason] || 0) + 1; return m; }, {}),
+    byType: trades.reduce((m, t) => { m[t.type] = (m[t.type] || 0) + 1; return m; }, {}),
+    avgEvR: trades.length ? trades.reduce((s, t) => s + (t.evR || 0), 0) / trades.length : 0,
+  };
+}
+
 Object.assign(window, {
   autoPickStrategy, autoEntry, autoScanAssets, autoTrain, autoBacktestAgent,
-  autoRegimeAt, autoRegimeFit, autoVolMedian, AUTO_GATE,
+  autoRegimeAt, autoRegimeFit, autoVolMedian, entrySignalEconomics, AUTO_GATE,
 });
