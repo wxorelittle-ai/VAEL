@@ -5,3 +5,9 @@ Nuar AI/
 # OS / editor cruft
 .DS_Store
 Thumbs.db
+
+# Deploy tarballs — built on demand by the scp deploy, never part of the source
+*.tar.gz
+
+# Agent/session scratch
+.claude/
