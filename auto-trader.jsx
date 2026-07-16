@@ -396,7 +396,73 @@ async function entrySignalEconomics(candles, cfg, onProgress) {
   };
 }
 
+/* ── Consensus: overlay every strategy on the same bar and count the votes.
+ * A strategy is a fixed-side rule set, so "voting" = how many of them fire long vs
+ * short right now. NOTE the library is structurally long-biased (9 buy / 4 sell), so
+ * raw vote counts are not symmetric — compare agreement levels, not sides. ── */
+function consensusVotes(f, i, lib) {
+  let long = 0, short = 0;
+  const who = [];
+  lib.forEach(s => {
+    if (typeof genesEntry === "function" && genesEntry(s.genes, f, i)) {
+      if (s.genes.side === "buy") long++; else short++;
+      who.push(s.name);
+    }
+  });
+  return { long, short, net: long - short, total: long + short, who };
+}
+
+/* Does agreement actually predict anything? For every bar, count the votes, take the
+ * majority side with a standard ATR stop/target, and record the outcome bucketed by
+ * how many strategies agreed. If accuracy rises with agreement there is something to
+ * use; if it is flat, overlaying strategies adds nothing but the illusion of support.
+ * Costs (fee + slippage) are charged in R, same as everywhere else. */
+function consensusEconomics(candles, cfg) {
+  if (!candles || candles.length < 300 || typeof computeFeatures !== "function" || typeof strategyLibrary !== "function") return null;
+  cfg = cfg || {};
+  const lib = strategyLibrary();
+  const f = computeFeatures(candles);
+  const H = cfg.horizon || 24, slAtrMult = cfg.slAtr || 1.5, tpR = cfg.tpR || 1.8;
+  const FEE = 0.00055, SLIP = 0.0002;
+  const buckets = {};   // agreement level -> stats
+
+  let i = 55;
+  while (i <= candles.length - 2) {
+    const v = consensusVotes(f, i, lib);
+    if (v.total < 1) { i++; continue; }
+    const side = v.net > 0 ? "buy" : v.net < 0 ? "sell" : null;
+    if (!side) { i++; continue; }
+    const agree = Math.abs(v.net);                 // how many net strategies agree
+    const long = side === "buy";
+    const entry = f.closes[i], atr = f.atr[i] || entry * 0.004;
+    const slD = atr * slAtrMult;
+    const sl = long ? entry - slD : entry + slD;
+    const tp = long ? entry + slD * tpR : entry - slD * tpR;
+    let R = null, xi = Math.min(i + H, candles.length - 1);
+    for (let j = i + 1; j <= Math.min(i + H, candles.length - 1); j++) {
+      const c = candles[j];
+      if (long) { if (c.lo <= sl) { R = -1; xi = j; break; } if (c.hi >= tp) { R = tpR; xi = j; break; } }
+      else { if (c.hi >= sl) { R = -1; xi = j; break; } if (c.lo <= tp) { R = tpR; xi = j; break; } }
+    }
+    if (R === null) { const xp = f.closes[xi]; const mv = long ? xp - entry : entry - xp; R = Math.max(-1, Math.min(tpR, mv / slD)); }
+    const costR = slD > 0 ? (entry * (FEE + SLIP) * 2) / slD : 0;
+    const net = R - costR;
+    const k = String(agree);
+    if (!buckets[k]) buckets[k] = { agree, trades: 0, wins: 0, netR: 0 };
+    buckets[k].trades++; if (net > 0) buckets[k].wins++; buckets[k].netR += net;
+    i = xi + 1;
+  }
+
+  const rows = Object.values(buckets).map(b => ({
+    agree: b.agree, trades: b.trades, wins: b.wins,
+    winRate: b.trades ? +(b.wins / b.trades * 100).toFixed(1) : 0,
+    avgR: +(b.netR / b.trades).toFixed(3), netR: +b.netR.toFixed(2),
+  })).sort((a, b) => a.agree - b.agree);
+  return { rows, breakevenWinRate: +(1 / (1 + tpR) * 100).toFixed(1) };
+}
+
 Object.assign(window, {
   autoPickStrategy, autoEntry, autoScanAssets, autoTrain, autoBacktestAgent,
-  autoRegimeAt, autoRegimeFit, autoVolMedian, entrySignalEconomics, AUTO_GATE,
+  autoRegimeAt, autoRegimeFit, autoVolMedian, entrySignalEconomics,
+  consensusVotes, consensusEconomics, AUTO_GATE,
 });
