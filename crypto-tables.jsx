@@ -111,7 +111,7 @@ function HistoryTable({ history }) {
         const isBuy = h.side === "buy";
         const color = isBuy ? "var(--green)" : "var(--red)";
         const pnlColor = h.pnl >= 0 ? "var(--green)" : "var(--red)";
-        const reasonLabel = { tp: "TP", sl: "SL", trail: "Трейл", liq: "ЛИКВ", manual: "вручную" }[h.reason] || h.reason;
+        const reasonLabel = { tp: "TP", sl: "SL", trail: "Трейл", liq: "ЛИКВ", daystop: "Дн.стоп", manual: "вручную" }[h.reason] || h.reason;
         const fee = h.fee != null ? h.fee : 0;
         return (
           <div key={h.id} style={{

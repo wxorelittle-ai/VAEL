@@ -260,9 +260,9 @@ function nowTsHM() {
 /* Auto-agent aggressiveness presets: how much of the budget it risks per trade,
  * the leverage ceiling, and how many positions it may hold at once. */
 const AUTO_PRESETS = {
-  safe:   { label: "Осторожно",  maxPos: 1, riskPct: 0.01, levCap: 5 },
-  normal: { label: "Норма",      maxPos: 2, riskPct: 0.02, levCap: 20 },
-  bold:   { label: "Агрессивно", maxPos: 3, riskPct: 0.04, levCap: 20 },
+  safe:   { label: "Осторожно",  maxPos: 1, riskPct: 0.01, levCap: 5,  stopPct: 0.03 },
+  normal: { label: "Норма",      maxPos: 2, riskPct: 0.02, levCap: 20, stopPct: 0.05 },
+  bold:   { label: "Агрессивно", maxPos: 3, riskPct: 0.04, levCap: 20, stopPct: 0.10 },
 };
 
 /* ─────────────────────────────────────────────────────────
@@ -603,6 +603,7 @@ function CryptoSignalsPanel({ lang }) {
     st.lastEval = 0; st.cooldownUntil = 0;
     st.lastPickTrades = history.filter(h => h.signalId === "auto").length;
     st.lastClosedAuto = st.lastPickTrades;
+    st.startAutoNet = history.filter(h => h.signalId === "auto").reduce((s, h) => s + (h.pnl || 0), 0);   // drawdown baseline
     if (strat) { setAutoStrat(strat); pushAutoLog(`▶ старт · «${strat.name}» (ROI ${strat.roi.toFixed(1)}% · win ${strat.win.toFixed(0)}%)`); }
     else pushAutoLog("▶ старт · подбираю стратегию…");
     setAutoOn(true);
@@ -624,6 +625,18 @@ function CryptoSignalsPanel({ lang }) {
       });
       st.lastClosedAuto = closedAuto;
       st.cooldownUntil = now + 15000;
+    }
+
+    // daily drawdown stop: if the agent's net (realized since start + open unrealised)
+    // breaches the preset's loss limit, halt and flatten the agent's positions.
+    const autoRealized = history.filter(h => h.signalId === "auto").reduce((s, h) => s + (h.pnl || 0), 0) - (st.startAutoNet || 0);
+    const autoUnreal = positions.filter(p => p.signalId === "auto").reduce((s, p) => s + (p.pnl || 0), 0);
+    const agentNet = autoRealized + autoUnreal;
+    if (agentNet < -budget * autoCfg.stopPct) {
+      pushAutoLog(`⛔ дневной стоп · просадка −$${Math.abs(agentNet).toFixed(2)} (лимит −${(autoCfg.stopPct * 100).toFixed(0)}%) · позиции закрыты`);
+      positions.filter(p => p.signalId === "auto").forEach(p => closePosition(p.id, undefined, "daystop"));
+      setAutoOn(false);
+      return;
     }
 
     // learn: every 5 closed agent trades, re-run the lab and adopt the new best
@@ -883,7 +896,8 @@ function CryptoSignalsPanel({ lang }) {
     }, ...prev].slice(0, 200));
     // side effect outside any updater
     const reasonLabel = reason === "tp" ? "Take Profit" : reason === "sl" ? "Stop Loss"
-      : reason === "trail" ? "Трейлинг-стоп" : reason === "liq" ? "ЛИКВИДАЦИЯ" : "ручное закрытие";
+      : reason === "trail" ? "Трейлинг-стоп" : reason === "liq" ? "ЛИКВИДАЦИЯ"
+      : reason === "daystop" ? "Дневной стоп" : "ручное закрытие";
     const dec = exitPrice < 10 ? 4 : 2;
     window.__emitToast?.({
       kind: reason === "tp" ? "win" : reason === "trail" ? (pnl >= 0 ? "win" : "loss")
@@ -1095,7 +1109,7 @@ function CryptoSignalsPanel({ lang }) {
                 ))}
               </div>
               <div style={{ fontFamily: "var(--font-mono)", fontSize: 8.5, color: "var(--text-dim)", marginTop: 3 }}>
-                риск {(autoCfg.riskPct * 100).toFixed(0)}% · до {autoCfg.maxPos} позиц. · плечо ≤{autoCfg.levCap}x
+                риск {(autoCfg.riskPct * 100).toFixed(0)}% · до {autoCfg.maxPos} позиц. · плечо ≤{autoCfg.levCap}x · дневной стоп −{(autoCfg.stopPct * 100).toFixed(0)}%
               </div>
             </div>
             <div style={{ display: "flex", gap: 12, fontFamily: "var(--font-mono)", fontSize: 10.5 }}>
