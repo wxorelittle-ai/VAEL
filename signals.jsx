@@ -1032,9 +1032,13 @@ function projectPath(candles, steps = 20, ctx = {}) {
 
 /* ─────────────────────────────────────────────────────────
  * Microstructure risk — the "manipulation" traceable lines, from data we already
- * have. Pump-and-dumps have a clear signature (a sharp move on abnormal volume in
- * minutes) and, per the research, mean-revert ~65% of the time → a "don't chase"
- * flag. Extreme funding / one-sided crowd = squeeze risk against the crowded side.
+ * have. Pump-and-dumps have a clear signature: a sharp move on abnormal volume in
+ * minutes → a "don't chase" flag. Extreme funding / one-sided crowd = squeeze risk
+ * against the crowded side.
+ *
+ * How often such a move actually retraces is NOT asserted here — an earlier version
+ * claimed "~65% mean-revert" with nothing behind it. Use pumpRevertRate() to measure
+ * it on real candles instead.
  * ────────────────────────────────────────────────────────*/
 function pumpSignature(candles, K = 5) {
   const n = candles ? candles.length : 0;
@@ -1051,6 +1055,38 @@ function pumpSignature(candles, K = 5) {
   const active = excess > 3.5 && volZ > 3;               // fast, outsized, on abnormal volume
   const level = (excess > 6 && volZ > 4) ? "extreme" : active ? "elevated" : "normal";
   return { retK, volZ, excess, active, level, dir: retK >= 0 ? "up" : "down" };
+}
+
+/* How often does a detected pump actually retrace? Measured, not asserted.
+ * Walks the series, finds every bar where the pump signature fires, and checks whether
+ * price gives back at least `giveback` of the move within `horizon` bars. Returns the
+ * real rate for THIS series — small samples included, so you can see the sample size
+ * rather than trust a round number. */
+function pumpRevertRate(candles, opts = {}) {
+  if (!candles || candles.length < 120) return null;
+  const K = opts.K || 5, horizon = opts.horizon || 8, giveback = opts.giveback || 0.5;
+  const closes = candles.map(c => c.close);
+  let fired = 0, reverted = 0;
+  for (let i = 60; i < candles.length - horizon; i++) {
+    const p = pumpSignature(candles.slice(0, i + 1), K);
+    if (!p || !p.active) continue;
+    fired++;
+    const from = closes[i];
+    const moveAbs = Math.abs(from - closes[i - K]);
+    if (moveAbs <= 0) continue;
+    const need = moveAbs * giveback;
+    let back = false;
+    for (let j = i + 1; j <= i + horizon; j++) {
+      const gaveBack = p.dir === "up" ? (from - candles[j].lo) : (candles[j].hi - from);
+      if (gaveBack >= need) { back = true; break; }
+    }
+    if (back) reverted++;
+  }
+  return {
+    fired, reverted,
+    rate: fired ? (reverted / fired) * 100 : null,
+    horizon, giveback,
+  };
 }
 
 function fundingRisk(linear) {
@@ -1074,7 +1110,7 @@ function microstructureRisk(candles, linear, longShort) {
   const funding = fundingRisk(linear);
   const crowd = crowdRisk(longShort);
   const flags = [];
-  if (pump && pump.active) flags.push({ kind: "pump", sev: pump.level === "extreme" ? 2 : 1, text: `резкое движение ${pump.retK >= 0 ? "+" : ""}${pump.retK.toFixed(1)}% на объёме ${pump.volZ.toFixed(1)}σ — возможен памп, ~65% таких откатывают` });
+  if (pump && pump.active) flags.push({ kind: "pump", sev: pump.level === "extreme" ? 2 : 1, text: `резкое движение ${pump.retK >= 0 ? "+" : ""}${pump.retK.toFixed(1)}% на объёме ${pump.volZ.toFixed(1)}σ — возможен памп, вход в эту сторону = погоня` });
   if (funding && (funding.level === "high" || funding.level === "extreme")) flags.push({ kind: "funding", sev: funding.level === "extreme" ? 2 : 1, text: `funding ${funding.fPct >= 0 ? "+" : ""}${funding.fPct.toFixed(3)}% — толпа перекошена в ${funding.crowdedSide}, риск сквиза` });
   if (crowd && crowd.level === "extreme") flags.push({ kind: "crowd", sev: 1, text: `${(crowd.buyRatio * 100).toFixed(0)}% в лонге — крайняя однобокость` });
   return { pump, funding, crowd, flags, level: flags.some(f => f.sev === 2) ? "high" : flags.length ? "elevated" : "normal" };
@@ -1209,28 +1245,30 @@ function optimalEntry(candles, opts = {}) {
       `R:R 1:${rr.toFixed(1)}`,
     ];
     const setup = aligned ? !!a.setup : (cluster.length >= 2 && rr >= 1.6);
-    /* Profit-optimal ranking = EXPECTANCY AFTER COSTS, not raw reward:risk.
+    /* HONEST EXPECTANCY — measured, not assumed.
      *
-     * p0 = 1/(1+R) is the random-walk chance of tagging the target before the stop, so
-     * a fatter R:R buys nothing by itself — it is proportionally less likely. Any edge
-     * must come from conviction actually PREDICTING outcomes. Replaying 34 of these
-     * signals over history showed it barely does: the old model lifted win odds to
-     * ~60-64% on conviction alone, the realised rate was 29%. So conviction now earns
-     * only a small bounded nudge.
+     * p0 = 1/(1+R) is the random-walk chance of tagging the target before the stop. A
+     * fatter R:R buys nothing by itself: it is proportionally less likely. Any edge
+     * would have to come from conviction actually PREDICTING outcomes — so we measured
+     * it. Replaying these signals over history (63 trades, 10 assets, 4h) gave a 30.2%
+     * win rate against that 35.7% baseline: the read does not beat a coin weighted by
+     * R:R. It therefore earns NO uplift here. Earlier versions invented one (+22.5% at
+     * conf 95), which is why the planner promised +0.46R and delivered losses.
      *
-     * And crucially: expectancy must be NET OF WHAT THE TRADE COSTS. A round trip pays
-     * fee + slippage twice, and against a tight ATR stop that is a large slice of R
-     * (a 0.24% stop turns ~0.15% of costs into ~0.6R). Ignoring it is exactly why the
-     * planner used to promise +0.46R and deliver losses. */
+     * With pWin = p0, gross EV is exactly zero by construction. What is left is the
+     * cost of trading — fee + slippage, paid twice, measured against the stop. That is
+     * the real number, and it is negative. If a genuine edge is ever demonstrated, it
+     * belongs here as a measured term, not an assumption. */
     const p0 = 1 / (1 + rr);
-    const pWin = Math.max(0.05, Math.min(0.9,
-      p0 + (conf - 50) / 100 * 0.08 + Math.min(cluster.length, 3) * 0.01));
+    const pWin = p0;                                // no unearned uplift
     const FEE = 0.00055, SLIP = 0.0002;             // per side, matching the terminal
     const costR = slPct > 0 ? ((FEE + SLIP) * 2) / slPct : 0;   // round-trip cost in R
-    const evGross = pWin * rr - (1 - pWin);
-    const evR = evGross - costR;                   // expected reward in R, after costs
-    const expectedUsd = evR * lossAtSl;            // ≈ expected $ per trade at this size
-    const pickScore = evR;
+    const evGross = pWin * rr - (1 - pWin);         // == 0
+    const evR = evGross - costR;                    // == -costR: the honest expectancy
+    const expectedUsd = evR * lossAtSl;             // expected $ per trade at this size
+    // Side preference is the TA read — our best guess at direction. It is a PREFERENCE,
+    // not a probability claim: it never feeds the expectancy above.
+    const pickScore = conf;
 
     return {
       side, entry, entryType, cluster, price, sl, tp, rr, slPct,
@@ -1256,7 +1294,7 @@ function optimalEntry(candles, opts = {}) {
 Object.assign(window, {
   analyzeMarket, taEma, taEmaSeries, taRsi, taMacd, taAtr, agentForSignal,
   monteCarloForecast, pairAnalysis, dailyAgentSim, projectPath, newsSentiment,
-  keyLevels, optimalEntry, pumpSignature, fundingRisk, crowdRisk, microstructureRisk,
+  keyLevels, optimalEntry, pumpSignature, pumpRevertRate, fundingRisk, crowdRisk, microstructureRisk,
   taVolAnomaly, computeMarketMetrics,
   taSmaSeries, taRsiSeries, taStochRsi, taSupertrend, taDmi, taBollinger,
   taCci, taParabolicSar, taAwesome,
