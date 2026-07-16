@@ -83,6 +83,9 @@ function App() {
   const [page, setPage] = useState("dashboard");
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [missionModalOpen, setMissionModalOpen] = useState(false);
+  // First run: no local account yet → the person creates one (name + starting capital)
+  // before the terminal opens. Paper account, no auth.
+  const [account, setAccount] = useState(() => (typeof loadAccount === "function" ? loadAccount() : {}));
 
   // expose openers globally so deep child components can trigger without prop drilling
   useEffect(() => {
@@ -228,6 +231,11 @@ function App() {
       default: return <DashboardPage agents={agents} metrics={metrics} lang={t.lang} mission={mission} />;
     }
   };
+
+  // gate the terminal behind first-run account creation
+  if (!account && typeof AccountSetup === "function") {
+    return <AccountSetup onDone={setAccount} />;
+  }
 
   return (
     <div style={{ display: "flex", height: "100vh", overflow: "hidden" }}>
