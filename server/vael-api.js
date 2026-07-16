@@ -20,6 +20,130 @@ const PORT = process.env.PORT || 8787;
  * a client-generated device id. Single small blob per device. ── */
 const DATA_DIR = process.env.VAEL_DATA_DIR || path.join(__dirname, "data");
 try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch (_) {}
+/* ── Polymarket calibration dataset ────────────────────────────────────────────
+ * The one testable question worth asking about prediction markets: does an outcome
+ * priced at X% actually happen X% of the time? If yes, the market is calibrated and
+ * there is no edge to take. If favourites systematically resolve MORE often than
+ * their price, buying them has positive expectancy — and vice versa.
+ *
+ * Method, and why each choice matters:
+ *   • price is read 7 days BEFORE resolution, never near it — close to the end the
+ *     price has already collapsed to 0/1 and the test would be trivially "calibrated";
+ *   • only binary Yes/No markets that resolved cleanly (outcomePrices 0/1);
+ *   • only real volume (>$20k) — dead markets are noise, not opinion;
+ *   • the market price is compared against the 95% CI of the realised rate. If the
+ *     price sits inside that interval we CANNOT claim a mispricing. That is the
+ *     honest null, and it is the default.
+ * Collection is incremental and stored, so the sample grows instead of being refetched. */
+// Several horizons, each analysed SEPARATELY: within one horizon every market
+// contributes exactly one point, so the samples stay independent. (Pooling all
+// horizons would double-count the same outcome — the same overlap trap that turned a
+// "0.74 correlation" into noise earlier.)
+const PM_LOOKBACKS = [1, 3, 7, 14, 30];
+const PM_MIN_VOLUME = 20000;
+const PM_MAX_AGE_DAYS = 120;   // CLOB keeps no history for older markets — see pmCollectPage
+function pmFile() { return path.join(DATA_DIR, "polymarket-calibration.json"); }
+function pmLoad() { try { return JSON.parse(fs.readFileSync(pmFile(), "utf8")); } catch (_) { return { rows: [], offset: 0, scanned: 0 }; } }
+function pmSave(d) { try { fs.writeFileSync(pmFile(), JSON.stringify(d)); return true; } catch (_) { return false; } }
+
+async function pmCollectPage(state) {
+  /* Two traps found the hard way, both worth keeping written down:
+   *  • the sortable/filterable field is volumeNum — `order=volume` silently does NOT
+   *    sort, which had this scanning random $100 micro-markets (2 usable rows / 300);
+   *  • CLOB serves NO price history for old markets. Unfiltered `closed=true` returns
+   *    2020-21 questions ("Will Trump win the 2020 election") whose history is long
+   *    pruned — every one returns {"history":[]}. Only recent resolutions are usable,
+   *    so the window is bounded. That bounds the sample too: this measures RECENT
+   *    Polymarket, and cannot speak for earlier regimes. */
+  const since = new Date(Date.now() - PM_MAX_AGE_DAYS * 86400000).toISOString();
+  const url = `https://gamma-api.polymarket.com/markets?closed=true&limit=100`
+    + `&volume_num_min=${PM_MIN_VOLUME}&end_date_min=${encodeURIComponent(since)}&offset=${state.offset}`;
+  const res = await fetch(url);
+  const j = await res.json();
+  const list = Array.isArray(j) ? j : (j.data || []);
+  state.offset += 100;
+  state.scanned += list.length;
+  const seen = new Set(state.rows.map(r => r.id + "@" + r.lookback));
+  let added = 0, markets = 0;
+  for (const m of list) {
+    let outcomes, prices, ids;
+    try {
+      outcomes = JSON.parse(m.outcomes || "[]");
+      prices = JSON.parse(m.outcomePrices || "[]");
+      ids = JSON.parse(m.clobTokenIds || "[]");
+    } catch (_) { continue; }
+    if (outcomes.length !== 2 || prices.length !== 2 || !ids[0]) continue;
+    if (+m.volume < PM_MIN_VOLUME) continue;
+    /* Resolution must be read numerically, not by string match. Two real cases here:
+     *   ["0","0"]                          → void/broken market. A `=== "0"` test would
+     *                                        silently score this as a NO and poison the study.
+     *   ["0.000001…","0.999998…"]          → a genuine NO that never equals the string "0".
+     * So: require the pair to sum to 1 (kills the void case) and land on an extreme. */
+    const p0 = +prices[0], p1 = +prices[1];
+    if (!isFinite(p0) || !isFinite(p1)) continue;
+    if (Math.abs(p0 + p1 - 1) > 0.01) continue;                   // void / unresolved
+    const resolvedYes = p0 > 0.99 ? 1 : (p0 < 0.01 ? 0 : null);
+    if (resolvedYes === null) continue;                           // never settled cleanly
+    try {
+      const h = await fetch(`https://clob.polymarket.com/prices-history?market=${ids[0]}&interval=max&fidelity=1440`);
+      const hj = await h.json();
+      const pts = hj.history || [];
+      if (pts.length < 3) continue;
+      markets++;
+      const endT = pts[pts.length - 1].t;
+      const yesWon = resolvedYes;
+      for (const lb of PM_LOOKBACKS) {
+        if (seen.has(m.id + "@" + lb)) continue;
+        const target = endT - lb * 86400;
+        let pick = null;
+        for (const p of pts) { if (p.t <= target) pick = p; else break; }
+        if (!pick) continue;                                       // market shorter than this horizon
+        state.rows.push({
+          id: m.id, lookback: lb, price: +pick.p, yesWon,
+          vol: Math.round(+m.volume), q: String(m.question || "").slice(0, 90),
+        });
+        seen.add(m.id + "@" + lb);
+        added++;
+      }
+    } catch (_) { /* skip a market whose history won't load */ }
+  }
+  state.markets = (state.markets || 0) + markets;
+  return added;
+}
+
+function pmCalibration(allRows, lookback) {
+  // one horizon at a time → one point per market → independent samples
+  const rows = lookback ? allRows.filter(r => r.lookback === lookback) : allRows;
+  const edges = [[0, .05], [.05, .15], [.15, .25], [.25, .35], [.35, .45], [.45, .55],
+                 [.55, .65], [.65, .75], [.75, .85], [.85, .95], [.95, 1.0001]];
+  return edges.map(([lo, hi]) => {
+    const r = rows.filter(x => x.price >= lo && x.price < hi);
+    const n = r.length;
+    if (!n) return null;
+    const meanPrice = r.reduce((s, x) => s + x.price, 0) / n;
+    const actual = r.reduce((s, x) => s + x.yesWon, 0) / n;
+    /* WILSON interval, not Wald. Wald (p ± 1.96·√(p(1-p)/n)) collapses to zero width
+     * when every market in a bucket resolved the same way — √(1·0/n) = 0 — so the CI
+     * becomes [1.000, 1.000] and ANY price falls "outside" it. That is exactly the
+     * favourites bucket, i.e. precisely where the interesting question lives: it would
+     * manufacture a mispricing out of 5 samples. Wilson stays honest at the extremes. */
+    const z = 1.96, z2 = z * z;
+    const denom = 1 + z2 / n;
+    const centre = (actual + z2 / (2 * n)) / denom;
+    const half = (z / denom) * Math.sqrt(actual * (1 - actual) / n + z2 / (4 * n * n));
+    const loCI = Math.max(0, centre - half), hiCI = Math.min(1, centre + half);
+    return {
+      range: `${Math.round(lo * 100)}-${Math.round(Math.min(hi, 1) * 100)}%`,
+      n, meanPrice: +meanPrice.toFixed(3), actualRate: +actual.toFixed(3),
+      deviation: +(actual - meanPrice).toFixed(3),
+      ci95: `${loCI.toFixed(3)}…${hiCI.toFixed(3)}`,
+      // The honest null: if the price sits inside the CI, calibration is not rejected.
+      priceInsideCI: meanPrice >= loCI && meanPrice <= hiCI,
+      evBuyYesPct: meanPrice > 0 ? +(((actual / meanPrice) - 1) * 100).toFixed(1) : null,
+    };
+  }).filter(Boolean);
+}
+
 function safePid(pid) { return String(pid || "").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 64) || "default"; }
 function stateFile(pid) { return path.join(DATA_DIR, safePid(pid) + ".json"); }
 function loadState(pid) { try { return JSON.parse(fs.readFileSync(stateFile(pid), "utf8")); } catch (_) { return null; } }
@@ -259,6 +383,36 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify(out));
       return;
     }
+    // Grow the calibration sample one page at a time (each page = 100 markets scanned).
+    if (u.pathname === "/api/pm/collect") {
+      const pages = Math.max(1, Math.min(+u.searchParams.get("pages") || 1, 5));
+      const state = pmLoad();
+      let added = 0;
+      for (let i = 0; i < pages; i++) {
+        try { added += await pmCollectPage(state); } catch (_) { break; }
+      }
+      pmSave(state);
+      res.end(JSON.stringify({ ok: true, added, rows: state.rows.length, markets: state.markets || 0, scanned: state.scanned, nextOffset: state.offset }));
+      return;
+    }
+    if (u.pathname === "/api/pm/calibration") {
+      const state = pmLoad();
+      const lb = +u.searchParams.get("lookback") || 0;
+      const byHorizon = {};
+      PM_LOOKBACKS.forEach(h => {
+        const n = state.rows.filter(r => r.lookback === h).length;
+        if (n) byHorizon[h + "d"] = { markets: n, buckets: pmCalibration(state.rows, h) };
+      });
+      res.end(JSON.stringify({
+        ok: true, rows: state.rows.length, markets: state.markets || 0, scanned: state.scanned,
+        minVolume: PM_MIN_VOLUME, horizons: PM_LOOKBACKS,
+        note: "each horizon analysed separately — one point per market, so samples are independent",
+        ...(lb ? { lookback: lb, buckets: pmCalibration(state.rows, lb) } : { byHorizon }),
+      }));
+      return;
+    }
+    if (u.pathname === "/api/pm/reset") { pmSave({ rows: [], offset: 0, scanned: 0 }); res.end(JSON.stringify({ ok: true })); return; }
+
     if (u.pathname === "/api/state") {
       const pid = safePid(u.searchParams.get("pid"));
       if (req.method === "POST") {
