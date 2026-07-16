@@ -1165,8 +1165,11 @@ function CryptoSignalsPanel({ lang }) {
                 {autoStrat ? autoStrat.name : autoOn ? "эджа нет — жду" : "стратегия не выбрана"}
               </div>
               {autoStrat
-                ? <div style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--text-dim)" }}>бэктест ROI {autoStrat.roi.toFixed(1)}% · win {autoStrat.win.toFixed(0)}% · PF {autoStrat.pf === Infinity ? "∞" : autoStrat.pf.toFixed(2)} · {autoStrat.trades} сд.</div>
-                : autoOn && <div style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--text-dim)" }}>ни одна не прошла порог (≥{AUTO_GATE.minTrades} сд. · PF ≥{AUTO_GATE.minPf}) · ищу каждые 60с</div>}
+                ? <div style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--text-dim)" }} title="ROI на невиданной части свечей (walk-forward), а не на тех, где стратегию искали">
+                    <span style={{ color: "var(--accent-2)" }}>OOS</span> ROI {autoStrat.roi.toFixed(1)}% · win {autoStrat.win.toFixed(0)}% · PF {autoStrat.pf === Infinity ? "∞" : autoStrat.pf.toFixed(2)} · {autoStrat.trades} сд.
+                    {autoStrat.inRoi != null && <span style={{ opacity: 0.7 }}> · на обучении {autoStrat.inRoi.toFixed(1)}%</span>}
+                  </div>
+                : autoOn && <div style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--text-dim)" }}>никто не прошёл walk-forward (≥{AUTO_GATE.minTrades} сд. · PF ≥{AUTO_GATE.minPf} на невиданных данных) · ищу каждые 60с</div>}
             </div>
             <div>
               <div style={{ fontFamily: "var(--font-mono)", fontSize: 8.5, color: "var(--text-dim)", marginBottom: 3, textTransform: "uppercase" }}>агрессивность</div>
