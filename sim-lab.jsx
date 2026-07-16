@@ -194,13 +194,17 @@ function genesRules(g) {
   return rules;
 }
 
-/* Capital-aware execution plan for a strategy at the LATEST candle — the same
- * optimal-leverage / liquidation logic the entry planner uses: pick the smallest
- * leverage that keeps margin near target, clamped so liquidation stays beyond the
- * stop. Numbers are honest given the strategy's own ATR stop. */
+/* Capital-aware execution plan for a strategy at a candle — the same optimal-leverage
+ * / liquidation logic the entry planner uses: pick the smallest leverage that keeps
+ * margin near target, clamped so liquidation stays beyond the stop. Numbers are honest
+ * given the strategy's own ATR stop.
+ * Defaults to the LATEST candle; pass cfg.idx to size at an earlier bar (the agent's
+ * own backtest needs this to replay decisions without seeing the future). */
 function genesPlan(candles, f, g, cfg) {
   const n = candles.length; if (n < 2) return null;
-  const i = n - 1;
+  cfg = cfg || {};
+  const i = cfg.idx != null ? cfg.idx : n - 1;
+  if (i < 1 || i >= n) return null;
   const long = g.side === "buy";
   const price = f.closes[i];
   const atr = f.atr[i] || price * 0.004;

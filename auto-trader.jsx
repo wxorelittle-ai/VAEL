@@ -125,4 +125,99 @@ async function autoTrain(symbols, interval, category, cfg, onProgress) {
   return { tested, kept, best: best.slice(0, 3), champions: champions.length };
 }
 
-Object.assign(window, { autoPickStrategy, autoEntry, autoScanAssets, autoTrain, AUTO_GATE });
+/* ── Does the agent actually make money? Replays its WHOLE loop over history with no
+ * lookahead: at every bar it may only use candles up to that bar. It re-picks its
+ * strategy on the live cadence (walk-forward + gate), enters only when the rules fire,
+ * manages with the trailing stop, and pays the same fee + slippage. This measures the
+ * economics of the AGENT — not of a strategy hand-picked with hindsight. ── */
+async function autoBacktestAgent(candles, asset, cfg, onProgress) {
+  if (!candles || candles.length < 600) return null;
+  if (typeof computeFeatures !== "function" || typeof genesEntry !== "function" || typeof genesPlan !== "function") return null;
+  cfg = cfg || {};
+  const capital = cfg.capital || 10000;
+  const riskPct = cfg.riskPct != null ? cfg.riskPct : 0.02;
+  const levCap = cfg.levCap || 20;
+  const feeRate = 0.055 / 100, slipRate = 0.02 / 100;   // same costs the live agent pays
+  const repick = cfg.repickBars || 120;
+  const warmup = cfg.warmup || 400;                     // the picker needs history to walk forward
+  // how wide the trailing stop rides, as a multiple of the strategy's stop distance.
+  // 0 = no trail (fixed stop only). Too tight and normal noise takes every trade out.
+  const trailMult = cfg.trailMult != null ? cfg.trailMult : 1;
+
+  const f = computeFeatures(candles);   // values at i only ever use bars <= i
+  let equity = capital, peak = capital, maxDD = 0;
+  const trades = [];
+  let strat = null, pos = null;
+  let picks = 0, picksWithEdge = 0, barsFlat = 0, barsIn = 0;
+
+  for (let i = warmup; i < candles.length - 1; i++) {
+    // re-pick on cadence — the picker only ever sees the past
+    if ((i - warmup) % repick === 0) {
+      strat = autoPickStrategy(candles.slice(0, i + 1), asset, { capital: equity, gate: cfg.gate });
+      picks++; if (strat) picksWithEdge++;
+      if (typeof onProgress === "function") onProgress({ bar: i, total: candles.length, picks, picksWithEdge, trades: trades.length, equity });
+      await new Promise(r => setTimeout(r, 0));   // yield so the UI stays responsive
+    }
+
+    const bar = candles[i];
+
+    if (pos) {
+      barsIn++;
+      const long = pos.side === "buy";
+      // advance the trailing stop on this bar's extreme, then test exits (stop first)
+      if (pos.trail) {
+        if (long) { pos.hiWater = Math.max(pos.hiWater, bar.hi); pos.sl = Math.max(pos.sl, pos.hiWater * (1 - pos.trail)); }
+        else { pos.loWater = Math.min(pos.loWater, bar.lo); pos.sl = Math.min(pos.sl, pos.loWater * (1 + pos.trail)); }
+      }
+      let exit = null, reason = null;
+      if (long) {
+        if (pos.liq && bar.lo <= pos.liq) { exit = pos.liq; reason = "liq"; }
+        else if (bar.lo <= pos.sl) { exit = pos.sl; reason = pos.trail ? "trail" : "sl"; }
+      } else {
+        if (pos.liq && bar.hi >= pos.liq) { exit = pos.liq; reason = "liq"; }
+        else if (bar.hi >= pos.sl) { exit = pos.sl; reason = pos.trail ? "trail" : "sl"; }
+      }
+      if (exit != null) {
+        const gross = long ? (exit - pos.entry) * (pos.size / pos.entry) : (pos.entry - exit) * (pos.size / pos.entry);
+        const cost = pos.size * (feeRate + slipRate) * 2;
+        const pnl = gross - cost;
+        equity = Math.max(1, equity + pnl);
+        trades.push({ side: pos.side, entry: pos.entry, exit, pnl, reason, bar: i, strat: pos.strat });
+        peak = Math.max(peak, equity);
+        maxDD = Math.max(maxDD, peak > 0 ? (peak - equity) / peak * 100 : 0);
+        pos = null;
+      }
+    } else {
+      barsFlat++;
+      // enter only while a gate-passing strategy is active and its rule fires
+      if (strat && genesEntry(strat.genes, f, i)) {
+        const plan = genesPlan(candles, f, strat.genes, { capital: equity, riskPct, levCap, idx: i });
+        if (plan && plan.margin > 0) {
+          pos = {
+            side: plan.side, entry: plan.entry, size: plan.notional, sl: plan.sl, liq: plan.liq,
+            trail: trailMult > 0 ? plan.slPct * trailMult : 0,
+            hiWater: plan.entry, loWater: plan.entry, strat: strat.name,
+          };
+        }
+      }
+    }
+  }
+
+  const wins = trades.filter(t => t.pnl > 0);
+  const losses = trades.filter(t => t.pnl <= 0);
+  const gW = wins.reduce((s, t) => s + t.pnl, 0);
+  const gL = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
+  const net = equity - capital;
+  return {
+    trades: trades.length, wins: wins.length, losses: losses.length,
+    winRate: trades.length ? wins.length / trades.length * 100 : 0,
+    net, roi: net / capital * 100, equity,
+    pf: gL > 0 ? gW / gL : (gW > 0 ? Infinity : 0),
+    maxDD, avg: trades.length ? net / trades.length : 0,
+    picks, picksWithEdge, barsFlat, barsIn,
+    byReason: trades.reduce((m, t) => { m[t.reason] = (m[t.reason] || 0) + 1; return m; }, {}),
+    list: trades.slice(-8),
+  };
+}
+
+Object.assign(window, { autoPickStrategy, autoEntry, autoScanAssets, autoTrain, autoBacktestAgent, AUTO_GATE });

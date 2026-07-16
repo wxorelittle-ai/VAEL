@@ -375,6 +375,7 @@ function CryptoSignalsPanel({ lang }) {
   const [autoPreset, setAutoPreset] = useState("normal");   // aggressiveness
   const [autoScan, setAutoScan] = useState(true);           // hunt signals across assets
   const [autoTraining, setAutoTraining] = useState(null);   // sandbox-training progress text
+  const [autoTesting, setAutoTesting] = useState(null);     // economics-replay progress text
   const autoRef = useRef({ lastEval: 0, lastPickTrades: 0, lastClosedAuto: 0, cooldownUntil: 0, lastScan: 0, scanning: false });
   const autoCfg = AUTO_PRESETS[autoPreset] || AUTO_PRESETS.normal;
   // Trading capital — owned by Settings; everything (margin, leverage) is derived from it.
@@ -611,12 +612,36 @@ function CryptoSignalsPanel({ lang }) {
         if (!r) { pushAutoLog("🎓 обучение не удалось"); return; }
         pushAutoLog(`🎓 готово · проверено ${r.tested} стратегий, прибыльных ${r.kept} · чемпионов ${r.champions}`);
         if (r.best[0]) pushAutoLog(`🏆 лучшая: «${r.best[0].name}» на ${r.best[0].symbol.replace("USDT", "")} (ROI ${r.best[0].roi.toFixed(1)}%)`);
-        // adopt what it just learned for the current asset
-        const strat = typeof autoPickStrategy === "function"
-          ? autoPickStrategy(candles, asset.bybit, { capital: budget, maxLev: asset.maxLev || 100 }) : null;
-        if (strat) { setAutoStrat(strat); pushAutoLog(`🧠 взял в работу «${strat.name}» (ROI ${strat.roi.toFixed(1)}%)`); }
+        // re-test on unseen data before adopting anything it just learned
+        pickStrategy("🧠 после обучения ·");
       })
       .catch(() => { setAutoTraining(null); pushAutoLog("🎓 обучение прервано"); });
+  }
+
+  /* Honest economics: replay the agent's whole loop over history with no lookahead and
+   * report what its trades actually earn — after fees and slippage. This is the number
+   * that matters; a strategy's backtest is not the agent's result. */
+  function testEconomics() {
+    if (autoTesting || typeof autoBacktestAgent !== "function") return;
+    setAutoTesting("загружаю историю…");
+    pushAutoLog("📊 тест экономики · воспроизвожу решения агента по истории…");
+    bybitFetchKlines(asset.bybit, restInterval, 1000, cat)
+      .then(c => {
+        if (!c || c.length < 600) { setAutoTesting(null); pushAutoLog("📊 мало истории для теста"); return null; }
+        return autoBacktestAgent(c, asset.bybit, { capital: budget, riskPct: autoCfg.riskPct, levCap: autoCfg.levCap },
+          p => setAutoTesting(`бар ${p.bar}/${p.total} · сделок ${p.trades}`));
+      })
+      .then(r => {
+        setAutoTesting(null);
+        if (!r) return;
+        if (r.trades === 0) {
+          pushAutoLog(`📊 итог · сделок 0 — эдж не подтвердился ни разу (${r.picksWithEdge}/${r.picks} отборов). Ничего не потеряно`);
+          return;
+        }
+        pushAutoLog(`📊 итог · ${r.trades} сд. · win ${r.winRate.toFixed(0)}% · ${r.net >= 0 ? "+" : "−"}$${Math.abs(r.net).toFixed(2)} (${r.roi >= 0 ? "+" : ""}${r.roi.toFixed(2)}%) · ср. сделка ${r.avg >= 0 ? "+" : "−"}$${Math.abs(r.avg).toFixed(2)}`);
+        pushAutoLog(`📊 просадка ${r.maxDD.toFixed(1)}% · PF ${r.pf === Infinity ? "∞" : r.pf.toFixed(2)} · выходы: ${Object.entries(r.byReason).map(([k, v]) => `${k}×${v}`).join(", ") || "—"}`);
+      })
+      .catch(() => { setAutoTesting(null); pushAutoLog("📊 тест прерван"); });
   }
 
   /* Strategy selection needs a LONG history: runSimLab holds out a recent slice to
@@ -1139,10 +1164,18 @@ function CryptoSignalsPanel({ lang }) {
             background: "transparent", color: "var(--text-dim)", border: "1px solid var(--line)",
           }}>✕</button>
         )}
+        <button onClick={testEconomics} disabled={!!autoTesting}
+          title="Честная экономика: воспроизводит решения агента по истории без заглядывания в будущее и показывает, что его сделки реально зарабатывают после комиссии и проскальзывания"
+          style={{
+            marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 600,
+            padding: "3px 10px", borderRadius: 3, cursor: autoTesting ? "default" : "pointer", letterSpacing: 0.05,
+            background: "var(--bg-2)", color: autoTesting ? "var(--text-dim)" : "var(--amber)",
+            border: `1px solid ${autoTesting ? "var(--line)" : "var(--amber)"}`, opacity: autoTesting ? 0.7 : 1,
+          }}>{autoTesting ? `📊 ${autoTesting}` : "📊 ТЕСТ ЭКОНОМИКИ"}</button>
         <button onClick={trainAgent} disabled={!!autoTraining}
           title="Прогнать историю в песочнице: агент быстро тестирует и эволюционирует стратегии, накапливая чемпионов"
           style={{
-            marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 600,
+            fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 600,
             padding: "3px 10px", borderRadius: 3, cursor: autoTraining ? "default" : "pointer", letterSpacing: 0.05,
             background: "var(--bg-2)", color: autoTraining ? "var(--text-dim)" : "var(--accent-2)",
             border: `1px solid ${autoTraining ? "var(--line)" : "var(--accent-2)"}`, opacity: autoTraining ? 0.7 : 1,
