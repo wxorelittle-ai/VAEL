@@ -628,8 +628,14 @@ function CryptoSignalsPanel({ lang }) {
     st.lastPickTrades = history.filter(h => h.signalId === "auto").length;
     st.lastClosedAuto = st.lastPickTrades;
     st.startAutoNet = history.filter(h => h.signalId === "auto").reduce((s, h) => s + (h.pnl || 0), 0);   // drawdown baseline
-    if (strat) { setAutoStrat(strat); pushAutoLog(`▶ старт · «${strat.name}» (ROI ${strat.roi.toFixed(1)}% · win ${strat.win.toFixed(0)}%)`); }
-    else pushAutoLog("▶ старт · подбираю стратегию…");
+    st.lastSearch = Date.now();
+    if (strat) {
+      setAutoStrat(strat);
+      pushAutoLog(`▶ старт · «${strat.name}» (ROI ${strat.roi.toFixed(1)}% · ${strat.trades} сд. · PF ${strat.pf === Infinity ? "∞" : strat.pf.toFixed(2)})`);
+    } else {
+      setAutoStrat(null);
+      pushAutoLog(`▶ старт · подтверждённого эджа нет — жду, не торгую (порог: ≥${AUTO_GATE.minTrades} сд., PF ≥${AUTO_GATE.minPf})`);
+    }
     setAutoOn(true);
     setTab("open");
   }
@@ -667,8 +673,23 @@ function CryptoSignalsPanel({ lang }) {
     if (autoStrat && closedAuto - st.lastPickTrades >= 5) {
       st.lastPickTrades = closedAuto;
       const strat = autoPickStrategy(candles, asset.bybit, cfg);
-      if (strat && strat.name !== autoStrat.name) { setAutoStrat(strat); pushAutoLog(`🧠 обучение · перешёл на «${strat.name}» (ROI ${strat.roi.toFixed(1)}%)`); }
+      if (strat && strat.name !== autoStrat.name) { setAutoStrat(strat); pushAutoLog(`🧠 обучение · перешёл на «${strat.name}» (ROI ${strat.roi.toFixed(1)}% · ${strat.trades} сд.)`); }
       else if (strat) pushAutoLog(`🧠 обучение · «${strat.name}» подтверждена лучшей`);
+      else { setAutoStrat(null); st.lastSearch = now; pushAutoLog("⚠ эдж пропал — ухожу в ожидание, новых сделок не открываю"); }
+    }
+
+    // No validated edge → do NOT trade. Keep re-testing every 60s; the moment a
+    // strategy clears the bar the agent starts working again.
+    if (!autoStrat) {
+      if (now - (st.lastSearch || 0) > 60000) {
+        st.lastSearch = now;
+        const strat = autoPickStrategy(candles, asset.bybit, cfg);
+        if (strat) {
+          setAutoStrat(strat);
+          pushAutoLog(`✓ эдж найден · «${strat.name}» (ROI ${strat.roi.toFixed(1)}% · ${strat.trades} сд. · PF ${strat.pf === Infinity ? "∞" : strat.pf.toFixed(2)})`);
+        }
+      }
+      return;
     }
 
     // enter: up to maxPos agent positions, ≥6s between evals, cooldown after a close
@@ -1140,10 +1161,12 @@ function CryptoSignalsPanel({ lang }) {
               <div style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--text-dim)", letterSpacing: 0.1 }}>
                 <span style={{ color: autoOn ? "var(--green)" : autoTraining ? "var(--accent-2)" : "var(--text-dim)" }}>●</span> АГЕНТ · {autoOn ? "ТОРГУЕТ" : autoTraining ? "ОБУЧАЕТСЯ" : "ОСТАНОВЛЕН"} · СИМУЛЯЦИЯ
               </div>
-              <div style={{ fontFamily: "var(--font-mono)", fontSize: 11.5, color: "var(--text-bright)", marginTop: 2 }}>
-                {autoStrat ? autoStrat.name : "подбор стратегии…"}
+              <div style={{ fontFamily: "var(--font-mono)", fontSize: 11.5, color: autoStrat ? "var(--text-bright)" : "var(--amber)", marginTop: 2 }}>
+                {autoStrat ? autoStrat.name : autoOn ? "эджа нет — жду" : "стратегия не выбрана"}
               </div>
-              {autoStrat && <div style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--text-dim)" }}>бэктест ROI {autoStrat.roi.toFixed(1)}% · win {autoStrat.win.toFixed(0)}% · PF {autoStrat.pf === Infinity ? "∞" : autoStrat.pf.toFixed(2)}</div>}
+              {autoStrat
+                ? <div style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--text-dim)" }}>бэктест ROI {autoStrat.roi.toFixed(1)}% · win {autoStrat.win.toFixed(0)}% · PF {autoStrat.pf === Infinity ? "∞" : autoStrat.pf.toFixed(2)} · {autoStrat.trades} сд.</div>
+                : autoOn && <div style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--text-dim)" }}>ни одна не прошла порог (≥{AUTO_GATE.minTrades} сд. · PF ≥{AUTO_GATE.minPf}) · ищу каждые 60с</div>}
             </div>
             <div>
               <div style={{ fontFamily: "var(--font-mono)", fontSize: 8.5, color: "var(--text-dim)", marginBottom: 3, textTransform: "uppercase" }}>агрессивность</div>

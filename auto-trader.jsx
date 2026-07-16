@@ -9,10 +9,15 @@
  * The dashboard drives the loop (start/stop, opening demo positions); this module is
  * the pure decision engine. It never places a real order. */
 
+/* Quality bar a strategy must clear before the agent will risk anything on it.
+ * minTrades kills the "100% win rate on 1 trade" curve-fits — a couple of lucky
+ * bars is noise, not an edge. */
+const AUTO_GATE = { minTrades: 8, minPf: 1.2, minRoi: 0 };
+
 // Pick the strategy the agent should trade now. Runs the lab (library + a fresh
 // generation + strategies evolved from this asset's champions), records the positive
-// ones as champions (so performance accrues across runs), and returns the top
-// performer's genes + a stats summary. This is the "it learns" step.
+// ones as champions (so performance accrues across runs), and returns the best one
+// that clears AUTO_GATE — or null, meaning "no edge, don't trade".
 function autoPickStrategy(candles, asset, cfg) {
   if (!candles || candles.length < 60 || typeof runSimLab !== "function") return null;
   cfg = cfg || {};
@@ -21,11 +26,22 @@ function autoPickStrategy(candles, asset, cfg) {
   const rows = runSimLab(candles, { capital: cfg.capital || 10000, leverage: 1, fees: 0.055, genCount: 8 }, seeds);
   if (!rows || !rows.length) return null;
   if (typeof recordChampions === "function") { try { recordChampions(rows, asset, Date.now()); } catch (_) {} }
-  const top = rows.find(r => r.totalReturn > 0) || rows[0];
-  if (!top || !top.genes) return null;
+
+  // Only a strategy that clears the bar is tradable. No fallback to "the least-bad
+  // loser" — if nothing shows an edge the agent must sit on its hands.
+  const gate = cfg.gate || AUTO_GATE;
+  const rejected = rows.length;
+  const passing = rows.filter(r => r.genes
+    && r.trades >= gate.minTrades
+    && r.profitFactor >= gate.minPf
+    && r.totalReturn > gate.minRoi);
+  if (!passing.length) return null;
+
+  const top = passing[0];   // runSimLab already sorts by total return
   return {
     genes: top.genes, name: top.name, source: top.source,
     roi: top.totalReturn, win: top.winRate, trades: top.trades, pf: top.profitFactor,
+    considered: rejected, passed: passing.length,
   };
 }
 
@@ -102,4 +118,4 @@ async function autoTrain(symbols, interval, category, cfg, onProgress) {
   return { tested, kept, best: best.slice(0, 3), champions: champions.length };
 }
 
-Object.assign(window, { autoPickStrategy, autoEntry, autoScanAssets, autoTrain });
+Object.assign(window, { autoPickStrategy, autoEntry, autoScanAssets, autoTrain, AUTO_GATE });
