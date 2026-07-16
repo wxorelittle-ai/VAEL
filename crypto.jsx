@@ -373,7 +373,8 @@ function CryptoSignalsPanel({ lang }) {
   const [autoStrat, setAutoStrat] = useState(null);   // {genes, name, roi, win, …}
   const [autoLog, setAutoLog] = useState([]);          // recent action lines
   const [autoPreset, setAutoPreset] = useState("normal");   // aggressiveness
-  const autoRef = useRef({ lastEval: 0, lastPickTrades: 0, lastClosedAuto: 0, cooldownUntil: 0 });
+  const [autoScan, setAutoScan] = useState(true);           // hunt signals across assets
+  const autoRef = useRef({ lastEval: 0, lastPickTrades: 0, lastClosedAuto: 0, cooldownUntil: 0, lastScan: 0, scanning: false });
   const autoCfg = AUTO_PRESETS[autoPreset] || AUTO_PRESETS.normal;
   // Trading capital — owned by Settings; everything (margin, leverage) is derived from it.
   const [budget, setBudget] = useState(loadBudget);
@@ -664,10 +665,27 @@ function CryptoSignalsPanel({ lang }) {
         setPositions(prev => [...prev, newPos]);
         pushAutoLog(`${plan.side === "buy" ? "▲ ЛОНГ" : "▼ ШОРТ"} @ ${price.toFixed(dec)} · ${plan.lev}x · трейл ${(plan.slPct * 100).toFixed(1)}%`);
         window.__emitToast?.({ kind: "open", title: `${asset.sym} · агент открыл ${plan.side === "buy" ? "ЛОНГ" : "ШОРТ"}`, body: `«${autoStrat.name}» · маржа ${newPos.margin}$ × ${newPos.lev}x = ${newPos.size}$`, meta: `трейлинг-стоп ${(plan.slPct * 100).toFixed(1)}% · вход ${price.toFixed(dec)}` });
+      } else if (autoScan && openAuto === 0 && !st.scanning && now - st.lastScan > 20000 && typeof autoScanAssets === "function") {
+        // No setup here. A strategy is a rule set, so hunt the same rules across the
+        // other watched assets; only while flat, so the position we open is always on
+        // the asset the dashboard is showing (and therefore live-managed).
+        st.scanning = true; st.lastScan = now;
+        const others = ASSETS.filter((_, i) => i !== assetIdx).slice(0, 5).map(a => a.bybit);
+        autoScanAssets(others, restInterval, 200, cat, autoStrat.genes, cfg)
+          .then(hit => {
+            st.scanning = false;
+            if (!hit) return;
+            const idx = ASSETS.findIndex(a => a.bybit === hit.symbol);
+            if (idx < 0) return;
+            pushAutoLog(`🔎 сигнал на ${ASSETS[idx].sym} — переключаюсь`);
+            st.lastEval = 0;                 // let the entry fire as soon as its candles land
+            setAssetIdx(idx);
+          })
+          .catch(() => { st.scanning = false; });
       }
     }
   // eslint-disable-next-line
-  }, [candles, autoOn, autoPreset]);
+  }, [candles, autoOn, autoPreset, autoScan]);
 
   // ─── new signals + verification (every ~5s) ────
   useInterval(() => {
@@ -1111,6 +1129,10 @@ function CryptoSignalsPanel({ lang }) {
               <div style={{ fontFamily: "var(--font-mono)", fontSize: 8.5, color: "var(--text-dim)", marginTop: 3 }}>
                 риск {(autoCfg.riskPct * 100).toFixed(0)}% · до {autoCfg.maxPos} позиц. · плечо ≤{autoCfg.levCap}x · дневной стоп −{(autoCfg.stopPct * 100).toFixed(0)}%
               </div>
+              <label style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 4, cursor: "pointer", fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--text-mid)" }}>
+                <input type="checkbox" checked={autoScan} onChange={e => setAutoScan(e.target.checked)} style={{ accentColor: "var(--accent-2)" }} />
+                искать сигнал по всем активам
+              </label>
             </div>
             <div style={{ display: "flex", gap: 12, fontFamily: "var(--font-mono)", fontSize: 10.5 }}>
               <span>сделок <span style={{ color: "var(--text-bright)" }}>{ah.length}</span>{openA ? <span style={{ color: "var(--accent-2)" }}> (+{openA} откр.)</span> : null}</span>

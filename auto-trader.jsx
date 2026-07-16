@@ -45,4 +45,20 @@ function autoEntry(candles, genes, cfg) {
   });
 }
 
-Object.assign(window, { autoPickStrategy, autoEntry });
+// Look for the agent's entry signal on OTHER symbols. A strategy is a rule set, so
+// it applies to any market — this lets the agent trade wherever the setup actually
+// appears instead of only the chart you happen to be on. Sequential (not parallel)
+// to stay polite to the REST endpoint. Returns the first hit {symbol, plan} or null.
+async function autoScanAssets(symbols, interval, limit, category, genes, cfg) {
+  if (!genes || typeof bybitFetchKlines !== "function") return null;
+  for (let i = 0; i < symbols.length; i++) {
+    try {
+      const c = await bybitFetchKlines(symbols[i], interval, limit || 200, category || "spot");
+      const plan = autoEntry(c, genes, cfg);
+      if (plan && plan.margin > 0) return { symbol: symbols[i], plan };
+    } catch (_) { /* skip a symbol that fails to load */ }
+  }
+  return null;
+}
+
+Object.assign(window, { autoPickStrategy, autoEntry, autoScanAssets });
