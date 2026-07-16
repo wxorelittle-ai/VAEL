@@ -1206,10 +1206,20 @@ function CryptoSignalsPanel({ lang }) {
                 {autoStrat ? autoStrat.name : autoOn ? "эджа нет — жду" : "стратегия не выбрана"}
               </div>
               {autoStrat
-                ? <div style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--text-dim)" }} title="ROI на невиданной части свечей (walk-forward), а не на тех, где стратегию искали">
-                    <span style={{ color: "var(--accent-2)" }}>OOS</span> ROI {autoStrat.roi.toFixed(1)}% · win {autoStrat.win.toFixed(0)}% · PF {autoStrat.pf === Infinity ? "∞" : autoStrat.pf.toFixed(2)} · {autoStrat.trades} сд.
-                    {autoStrat.inRoi != null && <span style={{ opacity: 0.7 }}> · на обучении {autoStrat.inRoi.toFixed(1)}%</span>}
-                  </div>
+                ? <>
+                    <div style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--text-dim)" }} title="ROI на невиданной части свечей (walk-forward), а не на тех, где стратегию искали">
+                      <span style={{ color: "var(--accent-2)" }}>OOS</span> ROI {autoStrat.roi.toFixed(1)}% · win {autoStrat.win.toFixed(0)}% · PF {autoStrat.pf === Infinity ? "∞" : autoStrat.pf.toFixed(2)} · {autoStrat.trades} сд.
+                      {autoStrat.inRoi != null && <span style={{ opacity: 0.7 }}> · на обучении {autoStrat.inRoi.toFixed(1)}%</span>}
+                    </div>
+                    {autoStrat.regime && (
+                      <div style={{ fontFamily: "var(--font-mono)", fontSize: 8.5, color: "var(--text-dim)" }} title="Режим рынка сейчас: направление · сила тренда · волатильность. Стратегия отсеивается, если в этом режиме она уже стабильно теряла.">
+                        режим <span style={{ color: "var(--accent-2)" }}>{autoStrat.regime.key}</span>
+                        {autoStrat.regime.seen
+                          ? ` · здесь ${autoStrat.regime.trades} сд., ср. ${autoStrat.regime.avgR >= 0 ? "+" : ""}${autoStrat.regime.avgR}R`
+                          : " · в этом режиме опыта нет"}
+                      </div>
+                    )}
+                  </>
                 : autoOn && <div style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--text-dim)" }}>никто не прошёл walk-forward (≥{AUTO_GATE.minTrades} сд. · PF ≥{AUTO_GATE.minPf} на невиданных данных) · ищу каждые 60с</div>}
             </div>
             <div>

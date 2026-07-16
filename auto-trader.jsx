@@ -43,12 +43,28 @@ function autoPickStrategy(candles, asset, cfg) {
     && r.totalReturn > gate.minRoi);
   if (!passing.length) return null;
 
-  const top = passing[0];   // runSimLab already ranks by out-of-sample return
+  // Regime check — used as a VETO, never as a promoter.
+  // A regime holds only 2-4 trades in a 1000-bar series: far too thin to CONFIRM an
+  // edge, and promoting a candidate on that basis would smuggle back the same curve-fit
+  // the gate exists to stop. But a candidate that has lost repeatedly in the regime
+  // we're actually in is real evidence to stand down.
+  let regimeNote = null;
+  const chosen = passing[0];
+  if (cfg.useRegime !== false && typeof autoRegimeFit === "function") {
+    const fit = autoRegimeFit(candles, chosen.genes, cfg);
+    const now = fit && fit.now ? fit.now.key : null;
+    const here = fit ? fit.rows.find(x => x.regime === now) : null;
+    regimeNote = { key: now, trades: here ? here.trades : 0, avgR: here ? here.avgR : null, seen: !!here, vetoed: false };
+    if (here && here.trades >= 3 && here.netR < 0) return null;   // proven to bleed here
+  }
+
+  const top = chosen;   // runSimLab already ranks by out-of-sample return
   return {
     genes: top.genes, name: top.name, source: top.source,
     roi: top.totalReturn, win: top.winRate, trades: top.trades, pf: top.profitFactor,
     inRoi: top.trainReturn,                 // in-sample score, to show the overfit gap
     considered: rows.length, passed: passing.length, oos: true,
+    regime: regimeNote,
   };
 }
 
@@ -123,6 +139,77 @@ async function autoTrain(symbols, interval, category, cfg, onProgress) {
   best.sort((a, b) => b.roi - a.roi);
   const champions = typeof loadChampions === "function" ? loadChampions() : [];
   return { tested, kept, best: best.slice(0, 3), champions: champions.length };
+}
+
+/* ── Market regime, from INTERNAL factors only (the ones we have history for).
+ *
+ * External factors — funding, long/short crowding, news, macro — exist only as a
+ * live snapshot in this app; there is no historical series for them, so they cannot
+ * honestly be correlated against past trades. They stay what they already are: a live
+ * risk brake (macroRisk / microstructureRisk cap leverage and flag chasing).
+ *
+ * Regime = direction × trend strength × volatility, e.g. "up·strong·calm". A strategy
+ * that earns in a strong trend usually bleeds in a chop, so knowing which regime a
+ * strategy's edge lives in — and whether we're in that regime now — is the honest way
+ * to adjust selection. ── */
+function autoRegimeAt(f, i, volMed) {
+  if (!f || i == null || i < 1) return null;
+  const dir = f.trend[i] > 0 ? "up" : f.trend[i] < 0 ? "down" : "flat";
+  const adx = f.adx[i] || 0;
+  const strength = adx >= 25 ? "strong" : adx >= 18 ? "mild" : "weak";
+  const atrPct = f.closes[i] ? (f.atr[i] / f.closes[i]) * 100 : 0;
+  const vol = volMed > 0 ? (atrPct > volMed * 1.3 ? "wild" : atrPct < volMed * 0.7 ? "calm" : "normal") : "normal";
+  return { key: `${dir}·${strength}·${vol}`, dir, strength, vol, adx, atrPct };
+}
+
+// median ATR% over the series — the yardstick "wild vs calm" is measured against
+function autoVolMedian(f) {
+  const v = [];
+  for (let i = 55; i < f.n; i++) if (f.closes[i]) v.push((f.atr[i] / f.closes[i]) * 100);
+  if (!v.length) return 0;
+  v.sort((a, b) => a - b);
+  return v[Math.floor(v.length / 2)];
+}
+
+/* Where does this strategy's edge actually live? Replays its trades and attributes
+ * each outcome to the regime at ENTRY, so you can see it earns in trends and bleeds in
+ * chop (or whatever the truth is). Returns per-regime stats + the current regime. */
+function autoRegimeFit(candles, genes, cfg) {
+  if (!candles || candles.length < 200 || typeof computeFeatures !== "function" || typeof genesEntry !== "function") return null;
+  cfg = cfg || {};
+  const f = computeFeatures(candles);
+  const volMed = autoVolMedian(f);
+  const long = genes.side === "buy";
+  const H = 24, feeRate = 0.055 / 100, slipRate = 0.02 / 100;
+  const by = {};
+  let i = 55;
+  while (i <= candles.length - 2) {
+    if (!genesEntry(genes, f, i)) { i++; continue; }
+    const reg = autoRegimeAt(f, i, volMed);
+    const entry = f.closes[i], atr = f.atr[i] || entry * 0.004;
+    const slD = atr * (genes.slAtr || 1.5);
+    const sl = long ? entry - slD : entry + slD;
+    const tp = long ? entry + slD * (genes.tpR || 1.8) : entry - slD * (genes.tpR || 1.8);
+    let R = null, xi = Math.min(i + H, candles.length - 1);
+    for (let j = i + 1; j <= Math.min(i + H, candles.length - 1); j++) {
+      const c = candles[j];
+      if (long) { if (c.lo <= sl) { R = -1; xi = j; break; } if (c.hi >= tp) { R = genes.tpR || 1.8; xi = j; break; } }
+      else { if (c.hi >= sl) { R = -1; xi = j; break; } if (c.lo <= tp) { R = genes.tpR || 1.8; xi = j; break; } }
+    }
+    if (R === null) { const xp = f.closes[xi]; const mv = long ? xp - entry : entry - xp; R = Math.max(-1, Math.min(genes.tpR || 1.8, mv / slD)); }
+    // costs in R terms, so regimes are compared after fees + slippage
+    const costR = slD > 0 ? (entry * (feeRate + slipRate) * 2) / slD : 0;
+    const net = R - costR;
+    const k = reg.key;
+    if (!by[k]) by[k] = { regime: k, trades: 0, wins: 0, netR: 0 };
+    by[k].trades++; if (net > 0) by[k].wins++; by[k].netR += net;
+    i = xi + 1;
+  }
+  const rows = Object.values(by).map(r => ({
+    ...r, netR: +r.netR.toFixed(2), winRate: r.trades ? r.wins / r.trades * 100 : 0,
+    avgR: +(r.netR / r.trades).toFixed(3),
+  })).sort((a, b) => b.netR - a.netR);
+  return { rows, now: autoRegimeAt(f, candles.length - 1, volMed), volMed };
 }
 
 /* ── Does the agent actually make money? Replays its WHOLE loop over history with no
@@ -220,4 +307,7 @@ async function autoBacktestAgent(candles, asset, cfg, onProgress) {
   };
 }
 
-Object.assign(window, { autoPickStrategy, autoEntry, autoScanAssets, autoTrain, autoBacktestAgent, AUTO_GATE });
+Object.assign(window, {
+  autoPickStrategy, autoEntry, autoScanAssets, autoTrain, autoBacktestAgent,
+  autoRegimeAt, autoRegimeFit, autoVolMedian, AUTO_GATE,
+});
